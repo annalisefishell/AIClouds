@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cmasher as cmr
 import math
+from sklearn.model_selection import train_test_split
 
 
 LR = 0.001
@@ -77,6 +78,11 @@ var_list = ['tcc', 'p71.162', 'p72.162', 'p54.162'] # interest is always 0
 keys = ['longitude', 'latitude', 'time']
 num_data = df.shape[0]
 
+x_vars = []
+for i in range(len(var_list)):
+   x_vars.append(var_list[i])
+
+
 # %% Checking the data via plots
 plot_vars(df, var_list, check_date)
 
@@ -99,18 +105,16 @@ for var in var_list:
 #     INPUT_1D.append(cosvect.reshape(INPUT_2D.shape[0],1,1,1))
 #     INPUT_1D.append(sinvect.reshape(INPUT_2D.shape[0],1,1,1))
 
-# %% split to training and test (80 20?)
-rn.seed(123)
-# idx_train = rn.sample(range(num_data), int(0.8*num_data))
-# df_train = [df[k][idx_train,:,:,:] for k in range(num_var)]
-# df_test = [np.delete(df[k],idx_train,axis=0) for k in range(num_var)]
+# %% split to training, test and validation(80 20?)
+df_train, df_test, df_train_label, df_test_label = train_test_split(df[x_vars],
+                                                                      df[var_list[0]],
+                                                                      test_size=0.2,
+                                                                      random_state=13)
+df_train, df_valid, df_train_label, df_valid_label = train_test_split(df_train, 
+                                                                      df_train_label, 
+                                                                      test_size=0.2, 
+                                                                      random_state=13)
 
-# #split dataset into dependent and independent variables
-# df_train_dep = df_train[dependent]
-# df_train_ind = df_train[independent]
-
-# df_test_dep = df_test[dependent]
-# df_test_ind = df_test[independent]
 
 # %% train model
 
