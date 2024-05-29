@@ -129,6 +129,7 @@ model = Sequential()
 model.add(Conv2D(filters=NUM_FILTERS, kernel_size=KERNEL_SIZE, activation=ACTIVATION,
                   input_shape=(9,9,1)))
 
+
 for layer in NUM_LAYERS-1:
    model.add(Conv2D(filters=NUM_FILTERS, kernel_size=KERNEL_SIZE, activation=ACTIVATION))
    model.add(LeakyReLU(alpha=0.1))
