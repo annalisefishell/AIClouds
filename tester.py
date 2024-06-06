@@ -6,7 +6,9 @@ import cartopy.crs as ccrs
 import cmasher as cmr
 import math
 import os
+import pickle
 from sklearn.model_selection import train_test_split
+import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv2D, Flatten, Dropout, LeakyReLU, MaxPooling2D, Dense
 
@@ -25,9 +27,10 @@ DATA_CRS = ccrs.PlateCarree()
 CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1), 
         cmr.get_sub_cmap('coolwarm', 0, 1)] # cmr.get_sub_cmap('PuBu', 0, 1),
 START_DATE = '1961-01-01T00:00:00.000000000' #'2010-01-26 00:00:00'
-END_DATE = '1965-01-01T00:00:00.000000000'
+END_DATE = '1962-01-01T00:00:00.000000000'
 
 # model
+FILEPATH_MODEL = 'model.pkl'
 LR = 0.001
 EPOCH = 100
 BS = 32
@@ -35,6 +38,7 @@ NUM_FILTERS = 32
 NUM_HIDDEN_LAYERS = 3
 ACTIVATION = 'relu'
 KERNEL_SIZE = (3,3)
+
 
 # %% plotting functions
 def plot_var(data_plot, i, var, num_var):
@@ -56,7 +60,7 @@ def plot_all_vars(ds, vars, save=False):
    data_plot = ds.sel(time=slice(START_DATE, START_DATE))
    num_var = len(vars)
 
-   plt.figure(figsize=(6,10))
+   plt.figure(figsize=(7,10))
    for i in range(num_var):
       plot_var(data_plot, i, vars[i], num_var)
    if save:
@@ -117,38 +121,52 @@ def read_data():
 
 
 # %% model funcions
-def build_model(x): # need to adjust a lo of paameters - callbacks? optimizers or losses or activation
+def train_model(x): # works, but need to adjust a lo of paameters - callbacks? optimizers or losses or activation
    model = Sequential()
    model.add(Conv2D(filters=NUM_FILTERS, kernel_size=KERNEL_SIZE, activation=ACTIVATION,
-                  input_shape=(x.shape[1],x.shape[2],x.shape[3])))
+                     input_shape=(x.shape[1],x.shape[2],x.shape[3]), padding='same'))
 
    for layer in range(NUM_HIDDEN_LAYERS-1):
-      model.add(Conv2D(filters=NUM_FILTERS, kernel_size=KERNEL_SIZE, activation=ACTIVATION))
+      model.add(Conv2D(filters=NUM_FILTERS*(layer+1), kernel_size=KERNEL_SIZE, activation=ACTIVATION, padding='same'))
       model.add(LeakyReLU(alpha=0.1))
-      model.add(MaxPooling2D(pool_size=(2,2), padding='same'))
 
-   model.add(Flatten())
    model.add(Dropout(0.5))
-   model.add(Dense((x.shape[1],x.shape[2]), activation=ACTIVATION)) #maybe need to change to make per matrix (size of len lon vs len lat)
+   model.add(Dense(x.shape[1]*x.shape[2]))
 
    model.compile(loss='mean_squared_error', optimizer='adam', metrics=['mean_absolute_error'])
    return model
 
+def build_model(x, FILEPATH_MODEL):
+   if os.path.isfile(FILEPATH_MODEL) and False:
+      print('Model already trained')
+      model = pickle.load(open(FILEPATH_MODEL, 'rb'))
+   else:
+      print('Training model.....')
+      model = train_model(x)
+      pickle.dump(model, open(FILEPATH_MODEL, 'wb'))
+   return model
+
+def evaluate_model(model, test, test_labels):
+   eval = model.evaluate(test, test_labels)
+   print('loss: ', eval[0])
+   print('mae: ', eval[1])
+
 
 # %% main
+tf.keras.backend.clear_session()
+
 data, var_list = read_data()
 
 x,y = reshape_vars(data, var_list)
+data.close()
 
 df_train, df_valid, df_train_label, df_valid_label = train_test_split(x, y, test_size=0.2,
                                                                       random_state=13)
 
-model = build_model(x)
+model = build_model(df_train, FILEPATH_MODEL)
+print(model.summary())
+
 model.fit(df_train, df_train_label, epochs=EPOCH, batch_size=BS, 
           validation_data=(df_valid, df_valid_label))
 
-
-# %% test model
-# eval = model.evaluate(df_test, df_test_label)
-# print('loss: ', eval[0])
-# print('mae: ', eval[1])
+# evaluate_model(model, .....)
