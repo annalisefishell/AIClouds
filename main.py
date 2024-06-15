@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv2D, Dropout, LeakyReLU, Dense
-
+# convert to pytorch
 
 # %% constants 
 # reading
@@ -60,7 +60,7 @@ def plot_var(data_plot, i, var, num_var):
 
   plt.title(data_plot[var].attrs['long_name']) #needs to be formatted!!
 
-def plot_all_vars(ds, vars, date, save=False):
+def plot_all_vars(ds, vars, date, filename=''):
    '''Given an xarray dataset, plots all the variables in the 
    variable list given they are geographic in subplots. The 
    save variable chooses whether to show of save in a file.'''
@@ -72,8 +72,8 @@ def plot_all_vars(ds, vars, date, save=False):
    for i in range(num_var):
       plot_var(data_plot, i, vars[i], num_var)
 
-   if save:
-      plt.savefig("trial.png")
+   if filename != '':
+      plt.savefig(filename)
    else:
       plt.show()
 
@@ -118,6 +118,7 @@ def read_data(reduce=False):
       with open(FILEPATH_CLEANED_DATA, 'rb') as f:
          loaded_dict = pickle.load(f)
          var_list = loaded_dict['variables']
+         keys = loaded_dict['keys']
          x_train = loaded_dict['x_train']
          y_train = loaded_dict['y_train']
          x_test = loaded_dict['x_test']
@@ -136,15 +137,17 @@ def read_data(reduce=False):
       x_train, y_train = clean_data(data, var_list, START_DATE, SPLIT_DATE)
       x_test, y_test = clean_data(data, var_list, SPLIT_DATE, END_DATE)
 
-      plot_all_vars(data, var_list, SPLIT_DATE, True)
+      keys = [data.time.values, data.lon.values, data.lat.values]
+
+      plot_all_vars(data, var_list, SPLIT_DATE, 'original_data.png')
       data.close()
       
       with open(FILEPATH_CLEANED_DATA, 'wb') as f:
-         pickle.dump({'variables': var_list,
+         pickle.dump({'variables': var_list, 'keys': keys,
                       'x_train': x_train, 'y_train': y_train,
                       'x_test': x_test, 'y_test': y_test}, f)
 
-   return var_list, x_train, y_train, x_test, y_test
+   return var_list, keys, x_train, y_train, x_test, y_test
 
 
 # %% model funcions
@@ -166,29 +169,31 @@ def build_model(x): # works, but need to adjust a lo of paameters - callbacks? o
       model.add(LeakyReLU(alpha=0.1))
 
    model.add(Dropout(0.5))
-   model.add(Dense(x.shape[1]*x.shape[2]))
+   model.add(Dense(1)) #x.shape[1]*x.shape[2]
 
    model.compile(loss='mean_squared_error', optimizer='adam', 
                  metrics=['mean_absolute_error']) # which meterics do I want to use?
    
    return model
 
-def load_model(x, FILEPATH_MODEL):
+def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
    '''Check if a CNN model is already built. If so, load the model from 
    the given pickle filepath. If not build it given the dimensions from 
    the dataset x, and save it to the filepath.'''
 
-   if os.path.isfile(FILEPATH_MODEL) and HAPPY_W_DATA:
-      print('Model already trained')
+   if os.path.isfile(FILEPATH_MODEL) and False:
+      print('Model already built')
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
-      print('Training model.....')
+      print('Building model.....')
       model = build_model(x)
+      model.fit(train, train_label, epochs=EPOCH, batch_size=len(train)//EPOCH, 
+          validation_data=(valid, valid_label))
       pickle.dump(model, open(FILEPATH_MODEL, 'wb'))
 
    return model
 
-def evaluate_model(model, test, test_labels):
+def evaluate_model(model, test, test_labels, keys):
    '''Given a trained model, use the test dataset and corect 
    labels to evaluate the performance.'''
 
@@ -196,19 +201,33 @@ def evaluate_model(model, test, test_labels):
    print('loss: ', eval[0])
    print('mae: ', eval[1])
 
+   y_pred = model.predict(test)
+
+   compare = xr.Dataset(
+      data_vars=dict(
+         pred_tcc = (['lon', 'lat', 'time'], np.array(y_pred).flatten()),
+         real_tcc = (['lon', 'lat', 'time'], test_labels)),
+      coords = dict(
+         lon = ('lon', keys[1]),
+         lat = ('lat', keys[2]),
+         time = ('time', keys[0])),
+      attrs=dict(description="Real total cloud cover compared to predicted from CNN")
+   )
+
+   plot_all_vars(compare, ['pred_tcc', 'real_tcc'], END_DATE, 'comparison.png')
+
 
 # %% main
 tf.keras.backend.clear_session()
 
-var_list, x_train, y_train, x_test, y_test = read_data(NUM_FILES!=0)
+var_list, keys, x_train, y_train, x_test, y_test = read_data(NUM_FILES!=0)
 
 df_train, df_valid, df_train_label, df_valid_label = train_test_split(x_train, y_train, 
                                                                      test_size=0.2,
                                                                      random_state=13)
 
-model = load_model(df_train, FILEPATH_MODEL)
-model.fit(df_train, df_train_label, epochs=EPOCH, batch_size=len(df_train)//EPOCH, 
-          validation_data=(df_valid, df_valid_label))
-# print(model.summary())
+model = load_model(df_train, FILEPATH_MODEL, df_train,
+                  df_train_label, df_valid, df_valid_label)
+print(model.summary())
 
-evaluate_model(model, x_test, y_test)
+evaluate_model(model, x_test, y_test, keys)
