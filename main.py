@@ -1,3 +1,9 @@
+'''
+To do:
+- adjust data based on size (generator/regional models/gpu/server?)
+- perfect model parameters
+- increase evaluation of the model (time)
+'''
 # %% imports
 import numpy as np
 import xarray as xr
@@ -11,7 +17,7 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv2D, Dropout, LeakyReLU, Dense
-# convert to pytorch
+# convert to pytorch?
 
 # %% constants 
 # reading
@@ -24,8 +30,8 @@ NUM_FILES = len(FILEPATH_DATA)
 
 # plotting
 DATA_CRS = ccrs.PlateCarree()
-CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1), 
-        cmr.get_sub_cmap('coolwarm', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1)]
+# CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1), 
+#         cmr.get_sub_cmap('coolwarm', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1)]
 
 # dates
 START_DATE = '1961-01-01T00:00:00.000000000' #'2010-01-01 00:00:00'
@@ -42,19 +48,30 @@ KERNEL_SIZE = (3,3)
 
 
 # %% plotting functions
+def determine_num_subplots(num_var):
+   '''Determine how many subplots are needed and define the 
+   subsequent square dimensions of those plots'''
+
+   if num_var == 2:
+      x, y = 1, 2
+   else:
+      x = y = math.ceil(num_var/2)
+
+   return x, y
+
 def plot_var(data_plot, i, var, num_var):
   '''Given a slice of an xarray dataset and a specific variable, 
   plots the matrix of the region. Also needs specification on the
   index and number of variables for the allocation of the subplot'''
 
-  ax = plt.subplot(math.ceil(num_var/2), math.ceil(num_var/2), i+1, 
-                   projection=DATA_CRS)
+  x,y = determine_num_subplots(num_var)
+  ax = plt.subplot(x, y, i+1, projection=DATA_CRS)
   ax.set_extent([min(data_plot.lon), max(data_plot.lon), 
                  min(data_plot.lat), max(data_plot.lat)], 
                  crs=DATA_CRS)
   ax.coastlines(resolution='50m')
 
-  im = data_plot[var].plot(cmap=CMAP[i],
+  im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1),
                            cbar_kwargs={"label": 
                                         data_plot[var].attrs['units']})
 
@@ -101,11 +118,36 @@ def reshape_vars(ds, vars):
 
    return X,Y
 
-def clean_data(data, var_list, start, end):
-   temp_data = data.sel(time=slice(start, end))
-   temp_data = standardize(temp_data, var_list)
-   x, y = reshape_vars(temp_data, var_list)
+def clean_data(ds, vars, start, end):
+   '''Select desired data from a larger set, standardizing it 
+   and adjusting it into the data type and shape needed for 
+   further use.'''
+
+   temp_data = ds.sel(time=slice(start, end))
+   temp_data = standardize(temp_data, vars)
+   x, y = reshape_vars(temp_data, vars)
    return x,y
+
+def open_datafile():
+   '''Read the data and combine subsequent files into one'''
+
+   data = xr.open_dataset(FILEPATH_DATA[0])
+   for i in range(NUM_FILES-1):
+      t = xr.open_dataset(FILEPATH_DATA[i+1])
+      data = xr.merge([data, t])
+   
+   return data
+
+def get_key_info(ds):
+   '''Get a list of numpy arrays containing the unique values of each 
+   corrisponding index variable'''
+
+   start_index = np.where(ds.time.values == np.datetime64(START_DATE))
+   end_index = np.where(ds.time.values == np.datetime64(END_DATE))
+   keys = [ds.time.values[int(start_index[0][0]):int(end_index[0][0])+1], 
+            ds.lon.values, ds.lat.values]
+   
+   return keys
 
 def read_data(reduce=False):
    '''Given a file path, checks if the data was already read 
@@ -124,11 +166,8 @@ def read_data(reduce=False):
          x_test = loaded_dict['x_test']
          y_test = loaded_dict['y_test']
    else:
-      print('Reading data.....')
-      data = xr.open_dataset(FILEPATH_DATA[0])
-      for i in range(NUM_FILES-1):
-         t = xr.open_dataset(FILEPATH_DATA[i+1])
-         data = xr.merge([data, t])
+      print('Preparing data.....')
+      data = open_datafile()
 
       if reduce: # only way to make big dataset work (maybe also consider coarsen)
          data = data.sel(lon=slice(-10,20), lat=slice(0,10))
@@ -136,8 +175,7 @@ def read_data(reduce=False):
       var_list = list(data.keys())
       x_train, y_train = clean_data(data, var_list, START_DATE, SPLIT_DATE)
       x_test, y_test = clean_data(data, var_list, SPLIT_DATE, END_DATE)
-
-      keys = [data.time.values, data.lon.values, data.lat.values]
+      keys = get_key_info(data)
 
       plot_all_vars(data, var_list, SPLIT_DATE, 'original_data.png')
       data.close()
@@ -181,7 +219,7 @@ def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
    the given pickle filepath. If not build it given the dimensions from 
    the dataset x, and save it to the filepath.'''
 
-   if os.path.isfile(FILEPATH_MODEL) and False:
+   if os.path.isfile(FILEPATH_MODEL) and HAPPY_W_DATA:
       print('Model already built')
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
@@ -193,6 +231,40 @@ def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
 
    return model
 
+
+# %% evaluate functions
+def build_compare_xarray(pred, real, keys):
+   '''Constructs a xarray dataset that contains the predicted values, 
+   real values and the difference between the two for each day in 
+   the test dataset'''
+
+   start_index = np.where(keys[0] == np.datetime64(SPLIT_DATE))
+   end_index = np.where(keys[0] == np.datetime64(END_DATE))
+   pred_time = keys[0][int(start_index[0][0]):int(end_index[0][0])+1], 
+
+   target = np.array(pred).flatten().reshape(len(pred_time[0]),
+                                               len(keys[2]),len(keys[1]))
+   real = np.squeeze(real, axis=-1)
+   diff = target-real
+
+   compare = xr.Dataset(
+      data_vars=dict(
+         pred_tcc = (['time', 'lat', 'lon'], target, {'units': '%', 
+                      'long_name': 'Predicted Total Cloud Cover'}),
+         real_tcc = (['time', 'lat', 'lon'], real, {'units': '%', 
+                      'long_name': 'Real Total Cloud Cover'}),
+         diff_tcc = (['time', 'lat', 'lon'], diff, 
+                     {'units': 'Difference of percentages',
+                      'long_name': 'Difference'})),
+      coords = dict(
+         time = ('time', pred_time[0]),
+         lat = ('lat', keys[2]),
+         lon = ('lon', keys[1])),
+      attrs = dict(description="Real total cloud cover compared to \
+                 predicted from CNN")
+   )
+   return compare
+
 def evaluate_model(model, test, test_labels, keys):
    '''Given a trained model, use the test dataset and corect 
    labels to evaluate the performance.'''
@@ -202,19 +274,9 @@ def evaluate_model(model, test, test_labels, keys):
    print('mae: ', eval[1])
 
    y_pred = model.predict(test)
-
-   compare = xr.Dataset(
-      data_vars=dict(
-         pred_tcc = (['lon', 'lat', 'time'], np.array(y_pred).flatten()),
-         real_tcc = (['lon', 'lat', 'time'], test_labels)),
-      coords = dict(
-         lon = ('lon', keys[1]),
-         lat = ('lat', keys[2]),
-         time = ('time', keys[0])),
-      attrs=dict(description="Real total cloud cover compared to predicted from CNN")
-   )
-
-   plot_all_vars(compare, ['pred_tcc', 'real_tcc'], END_DATE, 'comparison.png')
+   compare = build_compare_xarray(y_pred, test_labels, keys)
+   
+   plot_all_vars(compare, list(compare.keys()), END_DATE, 'comparison.png') # plot multiple days? see when the worst, why?
 
 
 # %% main
@@ -228,6 +290,6 @@ df_train, df_valid, df_train_label, df_valid_label = train_test_split(x_train, y
 
 model = load_model(df_train, FILEPATH_MODEL, df_train,
                   df_train_label, df_valid, df_valid_label)
-print(model.summary())
+# print(model.summary())
 
 evaluate_model(model, x_test, y_test, keys)
