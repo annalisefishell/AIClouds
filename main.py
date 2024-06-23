@@ -1,7 +1,7 @@
 '''
 To do:
 - adjust data based on size (generator/regional models/gpu/server?)
-- perfect model parameters
+- optimize model parameters (look into architecture)
 - increase evaluation of the model (time)
 '''
 # %% imports
@@ -17,13 +17,13 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Conv2D, Dropout, LeakyReLU, Dense
-# convert to pytorch?
+
 
 # %% constants 
 # reading
 FILEPATH_DATA = ['ERA5-total_cloud_cover-1961-1980-WQBox.nc4', # always make target first
                   'ERA5-total_column_water-1961-1980-WQBox.nc4', 
-                  'ERA5-2m_temperature-1961-1980-WQBox.nc4'] # ['ERA5_tester_data.nc']
+                  'ERA5-2m_temperature-1961-1980-WQBox.nc4']
 FILEPATH_CLEANED_DATA = 'cleaned_data.pkl'
 HAPPY_W_DATA = True
 NUM_FILES = len(FILEPATH_DATA)
@@ -34,9 +34,9 @@ DATA_CRS = ccrs.PlateCarree()
 #         cmr.get_sub_cmap('coolwarm', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1)]
 
 # dates
-START_DATE = '1961-01-01T00:00:00.000000000' #'2010-01-01 00:00:00'
-SPLIT_DATE = '1961-01-20T00:00:00.000000000' #'2010-07-31 00:00:00'
-END_DATE = '1961-01-25T00:00:00.000000000'
+START_DATE = '1961-01-01T00:00:00.000000000'
+SPLIT_DATE = '1975-01-01T00:00:00.000000000'
+END_DATE = '1979-01-01T00:00:00.000000000'
 
 # model
 FILEPATH_MODEL = 'model.pkl'
@@ -85,7 +85,7 @@ def plot_all_vars(ds, vars, date, filename=''):
    data_plot = ds.sel(time=slice(date, date))
    num_var = len(vars)
 
-   plt.figure(figsize=(10,5))
+   plt.figure(figsize=(7,5))
    for i in range(num_var):
       plot_var(data_plot, i, vars[i], num_var)
 
@@ -170,7 +170,7 @@ def read_data(reduce=False):
       data = open_datafile()
 
       if reduce: # only way to make big dataset work (maybe also consider coarsen)
-         data = data.sel(lon=slice(-10,20), lat=slice(0,10))
+         data = data.sel(lon=slice(0,30), lat=slice(0,30))
 
       var_list = list(data.keys())
       x_train, y_train = clean_data(data, var_list, START_DATE, SPLIT_DATE)
@@ -205,12 +205,15 @@ def build_model(x): # works, but need to adjust a lo of paameters - callbacks? o
                        kernel_size=KERNEL_SIZE, activation=ACTIVATION,
                        padding='same'))
       model.add(LeakyReLU(alpha=0.1))
+      # batch normalization
+      # pooling?
 
    model.add(Dropout(0.5))
-   model.add(Dense(1)) #x.shape[1]*x.shape[2]
+   # if pooling -> upsampling
+   model.add(Dense(1))
 
    model.compile(loss='mean_squared_error', optimizer='adam', 
-                 metrics=['mean_absolute_error']) # which meterics do I want to use?
+                 metrics=['mean_absolute_error']) # which metrics do I want to use?
    
    return model
 
