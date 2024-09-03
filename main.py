@@ -21,6 +21,7 @@ from tensorflow.keras.layers import Conv2D, Dropout, LeakyReLU, Dense
 
 # %% constants 
 # reading
+FILEPATH_DATA = ['ERA5_tester_data.nc']
 FILEPATH_DATA = ['ERA5-total_cloud_cover-1961-1980-WQBox.nc4', # always make target first
                   'ERA5-total_column_water-1961-1980-WQBox.nc4', 
                   'ERA5-2m_temperature-1961-1980-WQBox.nc4']
@@ -30,11 +31,11 @@ NUM_FILES = len(FILEPATH_DATA)
 
 # plotting
 DATA_CRS = ccrs.PlateCarree()
-# CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1), 
-#         cmr.get_sub_cmap('coolwarm', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1)]
+CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1), 
+        cmr.get_sub_cmap('coolwarm', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1)]
 
 # dates
-START_DATE = '1961-01-01T00:00:00.000000000'
+START_DATE =  '1961-01-01T00:00:00.000000000'
 SPLIT_DATE = '1975-01-01T00:00:00.000000000'
 END_DATE = '1979-01-01T00:00:00.000000000'
 
@@ -71,9 +72,9 @@ def plot_var(data_plot, i, var, num_var):
                  crs=DATA_CRS)
   ax.coastlines(resolution='50m')
 
-  im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1),
-                           cbar_kwargs={"label": 
-                                        data_plot[var].attrs['units']})
+  im = data_plot[var].plot()#cmap=cmr.get_sub_cmap('GnBu', 0, 1),
+                           # cbar_kwargs={"label": 
+                                       #  data_plot[var].attrs['units']})
 
   plt.title(data_plot[var].attrs['long_name']) #needs to be formatted!!
 
@@ -170,7 +171,7 @@ def read_data(reduce=False):
       data = open_datafile()
 
       if reduce: # only way to make big dataset work (maybe also consider coarsen)
-         data = data.sel(lon=slice(0,30), lat=slice(0,30))
+         data = data.sel(lat=slice(15,15), lon=slice(0,25)) #lat -90 to 90 lon -30 to 60
 
       var_list = list(data.keys())
       x_train, y_train = clean_data(data, var_list, START_DATE, SPLIT_DATE)
@@ -189,28 +190,32 @@ def read_data(reduce=False):
 
 
 # %% model funcions
-def build_model(x): # works, but need to adjust a lo of paameters - callbacks? optimizers or losses or activation
+def build_model(x, architecture= ''): # works, but need to adjust a lo of paameters - callbacks? optimizers or losses or activation
    '''Build the bones of a convolutional neural network with the same 
    input and output shape of x. Explain more once I figure out
    parameters. Then returns the model structure.'''
-   
-   model = Sequential()
-   model.add(Conv2D(filters=NUM_FILTERS, kernel_size=KERNEL_SIZE, 
-                    activation=ACTIVATION, 
+   if architecture == 'wf_unet':
+      model = Sequential()
+   elif architecture == 'unet':
+      model = Sequential()
+   elif architecture == 'unet++':
+      model = Sequential()
+   else:
+      print('Original architecture being used (possible name was not known)')
+      model = Sequential()
+      model.add(Conv2D(filters=30, kernel_size=(3,3), 
+                    activation='relu', 
                     input_shape=(x.shape[1],x.shape[2],x.shape[3]),
                     padding='same'))
 
-   for layer in range(NUM_HIDDEN_LAYERS-1):
-      model.add(Conv2D(filters=NUM_FILTERS*(layer+1), 
+      for layer in range(2):
+         model.add(Conv2D(filters=NUM_FILTERS*(layer+1), 
                        kernel_size=KERNEL_SIZE, activation=ACTIVATION,
                        padding='same'))
-      model.add(LeakyReLU(alpha=0.1))
-      # batch normalization
-      # pooling?
+         model.add(LeakyReLU(alpha=0.1))
 
-   model.add(Dropout(0.5))
-   # if pooling -> upsampling
-   model.add(Dense(1))
+      model.add(Dropout(0.5))
+      model.add(Dense(1))
 
    model.compile(loss='mean_squared_error', optimizer='adam', 
                  metrics=['mean_absolute_error']) # which metrics do I want to use?
@@ -222,7 +227,7 @@ def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
    the given pickle filepath. If not build it given the dimensions from 
    the dataset x, and save it to the filepath.'''
 
-   if os.path.isfile(FILEPATH_MODEL) and HAPPY_W_DATA:
+   if os.path.isfile(FILEPATH_MODEL) and False:
       print('Model already built')
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
