@@ -15,8 +15,9 @@ import os
 import pickle
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, Dropout, LeakyReLU, Dense
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import Input, MaxPooling2D, Conv2D, Conv2DTranspose, \
+   concatenate, Dropout, LeakyReLU, Dense
 
 
 # %% constants 
@@ -156,7 +157,7 @@ def read_data(reduce=False):
    opens the data, cleans it, and saves it in a new file. Returns
    both the data and a list of present variables.'''
    
-   if os.path.isfile(FILEPATH_CLEANED_DATA) and HAPPY_W_DATA:
+   if os.path.isfile(FILEPATH_CLEANED_DATA) and True:
       print('Data already preprocessed')
       with open(FILEPATH_CLEANED_DATA, 'rb') as f:
          loaded_dict = pickle.load(f)
@@ -171,7 +172,7 @@ def read_data(reduce=False):
       data = open_datafile()
 
       if reduce: # only way to make big dataset work (maybe also consider coarsen)
-         data = data.sel(lat=slice(15,15), lon=slice(0,25)) #lat -90 to 90 lon -30 to 60
+         data = data.sel(lat=slice(0,15), lon=slice(0,25)) #lat -90 to 90 lon -30 to 60
 
       var_list = list(data.keys())
       x_train, y_train = clean_data(data, var_list, START_DATE, SPLIT_DATE)
@@ -190,14 +191,76 @@ def read_data(reduce=False):
 
 
 # %% model funcions
-def build_model(x, architecture= ''): # works, but need to adjust a lo of paameters - callbacks? optimizers or losses or activation
+def build_model(x, architecture= ''):
    '''Build the bones of a convolutional neural network with the same 
    input and output shape of x. Explain more once I figure out
    parameters. Then returns the model structure.'''
+
    if architecture == 'wf_unet':
       model = Sequential()
    elif architecture == 'unet':
-      model = Sequential()
+      print(x.shape[1],x.shape[2],x.shape[3])
+      inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
+
+      # Contracting Path (Encoder)
+      # Block 1
+      c1 = Conv2D(64, (3, 3), activation='relu', padding='same')(inputs)
+      c1 = Conv2D(64, (3, 3), activation='relu', padding='same')(c1)
+      p1 = MaxPooling2D((2, 2))(c1)
+
+      # Block 2
+      c2 = Conv2D(128, (3, 3), activation='relu', padding='same')(p1)
+      c2 = Conv2D(128, (3, 3), activation='relu', padding='same')(c2)
+      p2 = MaxPooling2D((2, 2))(c2)
+
+      # Block 3
+      c3 = Conv2D(256, (3, 3), activation='relu', padding='same')(p2)
+      c3 = Conv2D(256, (3, 3), activation='relu', padding='same')(c3)
+      p3 = MaxPooling2D((2, 2))(c3)
+
+      # Block 4
+      c4 = Conv2D(512, (3, 3), activation='relu', padding='same')(p3)
+      c4 = Conv2D(512, (3, 3), activation='relu', padding='same')(c4)
+      p4 = MaxPooling2D((2, 2))(c4)
+
+      # Bottleneck
+      c5 = Conv2D(1024, (3, 3), activation='relu', padding='same')(p4)
+      c5 = Conv2D(1024, (3, 3), activation='relu', padding='same')(c5)
+
+      # Expanding Path (Decoder)
+      # Block 4
+      u6 = Conv2DTranspose(512, (2, 2), strides=(2, 2), padding='same')(c5)
+      u6 = concatenate([u6, c4])  # Skip connection --- error happening here
+      c6 = Conv2D(512, (3, 3), activation='relu', padding='same')(u6)
+      c6 = Conv2D(512, (3, 3), activation='relu', padding='same')(c6)
+
+      # Block 3
+      u7 = Conv2DTranspose(256, (2, 2), strides=(2, 2), padding='same')(c6)
+      u7 = concatenate([u7, c3])  # Skip connection
+      c7 = Conv2D(256, (3, 3), activation='relu', padding='same')(u7)
+      c7 = Conv2D(256, (3, 3), activation='relu', padding='same')(c7)
+
+      # Block 2
+      u8 = Conv2DTranspose(128, (2, 2), strides=(2, 2), padding='same')(c7)
+      u8 = concatenate([u8, c2])  # Skip connection
+      c8 = Conv2D(128, (3, 3), activation='relu', padding='same')(u8)
+      c8 = Conv2D(128, (3, 3), activation='relu', padding='same')(c8)
+
+      # Block 1
+      u9 = Conv2DTranspose(64, (2, 2), strides=(2, 2), padding='same')(c8)
+      u9 = concatenate([u9, c1])  # Skip connection
+      c9 = Conv2D(64, (3, 3), activation='relu', padding='same')(u9)
+      c9 = Conv2D(64, (3, 3), activation='relu', padding='same')(c9)
+
+      # Output layer
+      outputs = Conv2D(1, (1, 1), activation='sigmoid')(c9)
+
+      # Define the model
+      model = Model(inputs, outputs)
+
+      # Compile the model
+      model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
    elif architecture == 'unet++':
       model = Sequential()
    else:
@@ -232,7 +295,7 @@ def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
       print('Building model.....')
-      model = build_model(x)
+      model = build_model(x, 'unet')
       model.fit(train, train_label, epochs=EPOCH, batch_size=len(train)//EPOCH, 
           validation_data=(valid, valid_label))
       pickle.dump(model, open(FILEPATH_MODEL, 'wb'))
