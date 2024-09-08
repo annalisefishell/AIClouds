@@ -16,8 +16,8 @@ import pickle
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Input, MaxPooling2D, Conv2D, Conv2DTranspose, \
-   concatenate, Dropout, LeakyReLU, Dense
+from tensorflow.keras.layers import Input, MaxPool2D, Conv2D, Conv2DTranspose, \
+   Concatenate, Dropout, LeakyReLU, Dense, Activation, Resizing
 
 
 # %% constants 
@@ -191,76 +191,81 @@ def read_data(reduce=False):
 
 
 # %% model funcions
+
+def encoder_block(inputs, num_filters, bottleneck=False): #geeksforgeeks
+  
+   # Convolution with 3x3 filter followed by ReLU activation 
+   x = Conv2D(num_filters, 3, padding = 'same')(inputs) 
+   x = Activation('relu')(x) 
+      
+   # Convolution with 3x3 filter followed by ReLU activation 
+   x = Conv2D(num_filters, 3, padding = 'same')(x) 
+   x = Activation('relu')(x) 
+  
+   if not bottleneck:
+      # Max Pooling with 2x2 filter 
+      x = MaxPool2D(pool_size = (2, 2), strides = 2)(x) 
+      
+   return x
+
+def decoder_block(inputs, skip_features, num_filters): 
+
+	# Upsampling with 2x2 filter
+   x = Conv2DTranspose(num_filters, (2, 2), strides = 2, padding = 'same')(inputs) 
+	
+	# Copy and crop the skip features 
+	# to match the shape of the upsampled input 
+   skip_features = Resizing(x.shape[1], x.shape[2])(skip_features)
+   x = Concatenate()([x, skip_features]) 
+	
+	# Convolution with 3x3 filter followed by ReLU activation 
+   x = Conv2D(num_filters, 3, padding = 'same')(x) 
+   x = tf.keras.layers.Activation('relu')(x) 
+
+	# Convolution with 3x3 filter followed by ReLU activation 
+   x = Conv2D(num_filters, 3, padding = 'same')(x) 
+   x = Activation('relu')(x) 
+	
+   return x
+
+
 def build_model(x, architecture= ''):
    '''Build the bones of a convolutional neural network with the same 
    input and output shape of x. Explain more once I figure out
    parameters. Then returns the model structure.'''
 
    if architecture == 'wf_unet':
+      #unet but then each variable runs individually o n the unet then is combined
       model = Sequential()
    elif architecture == 'unet':
+      print(x.shape)
       print(x.shape[1],x.shape[2],x.shape[3])
       inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
 
       # Contracting Path (Encoder)
-      # Block 1
-      c1 = Conv2D(64, (3, 3), activation='relu', padding='same')(inputs)
-      c1 = Conv2D(64, (3, 3), activation='relu', padding='same')(c1)
-      p1 = MaxPooling2D((2, 2))(c1)
-
-      # Block 2
-      c2 = Conv2D(128, (3, 3), activation='relu', padding='same')(p1)
-      c2 = Conv2D(128, (3, 3), activation='relu', padding='same')(c2)
-      p2 = MaxPooling2D((2, 2))(c2)
-
-      # Block 3
-      c3 = Conv2D(256, (3, 3), activation='relu', padding='same')(p2)
-      c3 = Conv2D(256, (3, 3), activation='relu', padding='same')(c3)
-      p3 = MaxPooling2D((2, 2))(c3)
-
-      # Block 4
-      c4 = Conv2D(512, (3, 3), activation='relu', padding='same')(p3)
-      c4 = Conv2D(512, (3, 3), activation='relu', padding='same')(c4)
-      p4 = MaxPooling2D((2, 2))(c4)
+      c1 = encoder_block(inputs, 64)
+      c2 = encoder_block(c1, 128)
+      c3 = encoder_block(c2, 256)
+      c4 = encoder_block(c3, 512)
 
       # Bottleneck
-      c5 = Conv2D(1024, (3, 3), activation='relu', padding='same')(p4)
-      c5 = Conv2D(1024, (3, 3), activation='relu', padding='same')(c5)
+      b1 = encoder_block(c4, 1024, True)
 
       # Expanding Path (Decoder)
-      # Block 4
-      u6 = Conv2DTranspose(512, (2, 2), strides=(2, 2), padding='same')(c5)
-      u6 = concatenate([u6, c4])  # Skip connection --- error happening here
-      c6 = Conv2D(512, (3, 3), activation='relu', padding='same')(u6)
-      c6 = Conv2D(512, (3, 3), activation='relu', padding='same')(c6)
-
-      # Block 3
-      u7 = Conv2DTranspose(256, (2, 2), strides=(2, 2), padding='same')(c6)
-      u7 = concatenate([u7, c3])  # Skip connection
-      c7 = Conv2D(256, (3, 3), activation='relu', padding='same')(u7)
-      c7 = Conv2D(256, (3, 3), activation='relu', padding='same')(c7)
-
-      # Block 2
-      u8 = Conv2DTranspose(128, (2, 2), strides=(2, 2), padding='same')(c7)
-      u8 = concatenate([u8, c2])  # Skip connection
-      c8 = Conv2D(128, (3, 3), activation='relu', padding='same')(u8)
-      c8 = Conv2D(128, (3, 3), activation='relu', padding='same')(c8)
-
-      # Block 1
-      u9 = Conv2DTranspose(64, (2, 2), strides=(2, 2), padding='same')(c8)
-      u9 = concatenate([u9, c1])  # Skip connection
-      c9 = Conv2D(64, (3, 3), activation='relu', padding='same')(u9)
-      c9 = Conv2D(64, (3, 3), activation='relu', padding='same')(c9)
+      c5 = decoder_block(b1, c4, 512) 
+      c6 = decoder_block(c5, c3, 256) 
+      c7 = decoder_block(c6, c2, 128) 
+      c8 = decoder_block(c7, c1, 64) 
 
       # Output layer
-      outputs = Conv2D(1, (1, 1), activation='sigmoid')(c9)
+      c8 = Resizing(x.shape[1], x.shape[2])(c8)
+      outputs = Conv2D(1, (1, 1), padding='same', activation='sigmoid')(c8)
 
       # Define the model
-      model = Model(inputs, outputs)
+      model = Model(inputs, outputs, name='U-Net')
 
       # Compile the model
       model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-
    elif architecture == 'unet++':
       model = Sequential()
    else:
@@ -295,7 +300,8 @@ def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
       print('Building model.....')
-      model = build_model(x, 'unet')
+      model = build_model(x)
+      print(model.summary())
       model.fit(train, train_label, epochs=EPOCH, batch_size=len(train)//EPOCH, 
           validation_data=(valid, valid_label))
       pickle.dump(model, open(FILEPATH_MODEL, 'wb'))
@@ -361,6 +367,5 @@ df_train, df_valid, df_train_label, df_valid_label = train_test_split(x_train, y
 
 model = load_model(df_train, FILEPATH_MODEL, df_train,
                   df_train_label, df_valid, df_valid_label)
-# print(model.summary())
 
 evaluate_model(model, x_test, y_test, keys)
