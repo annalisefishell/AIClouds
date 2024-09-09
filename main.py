@@ -172,7 +172,7 @@ def read_data(reduce=False):
       data = open_datafile()
 
       if reduce: # only way to make big dataset work (maybe also consider coarsen)
-         data = data.sel(lat=slice(0,15), lon=slice(0,25)) #lat -90 to 90 lon -30 to 60
+         data = data.sel(lat=slice(40,55), lon=slice(0,15)) #lat -90 to 90 lon -30 to 60
 
       var_list = list(data.keys())
       x_train, y_train = clean_data(data, var_list, START_DATE, SPLIT_DATE)
@@ -238,8 +238,6 @@ def build_model(x, architecture= ''):
       #unet but then each variable runs individually o n the unet then is combined
       model = Sequential()
    elif architecture == 'unet':
-      print(x.shape)
-      print(x.shape[1],x.shape[2],x.shape[3])
       inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
 
       # Contracting Path (Encoder)
@@ -249,7 +247,7 @@ def build_model(x, architecture= ''):
       c4 = encoder_block(c3, 512)
 
       # Bottleneck
-      b1 = encoder_block(c4, 1024, True)
+      b1 = encoder_block(c4, 1024, bottleneck=True)
 
       # Expanding Path (Decoder)
       c5 = decoder_block(b1, c4, 512) 
@@ -264,8 +262,6 @@ def build_model(x, architecture= ''):
       # Define the model
       model = Model(inputs, outputs, name='U-Net')
 
-      # Compile the model
-      model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
    elif architecture == 'unet++':
       model = Sequential()
    else:
@@ -285,9 +281,8 @@ def build_model(x, architecture= ''):
       model.add(Dropout(0.5))
       model.add(Dense(1))
 
-   model.compile(loss='mean_squared_error', optimizer='adam', 
-                 metrics=['mean_absolute_error']) # which metrics do I want to use?
-   
+   model.compile(optimizer='adam', loss='mean_squared_error', metrics=['MeanSquaredLogarithmicError'])
+
    return model
 
 def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
@@ -301,7 +296,7 @@ def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
    else:
       print('Building model.....')
       model = build_model(x)
-      print(model.summary())
+      # print(model.summary())
       model.fit(train, train_label, epochs=EPOCH, batch_size=len(train)//EPOCH, 
           validation_data=(valid, valid_label))
       pickle.dump(model, open(FILEPATH_MODEL, 'wb'))
@@ -347,8 +342,10 @@ def evaluate_model(model, test, test_labels, keys):
    labels to evaluate the performance.'''
 
    eval = model.evaluate(test, test_labels)
-   print('loss: ', eval[0])
-   print('mae: ', eval[1])
+   names = ['MeanSquaredError', 'MeanSquaredLogarithmicError']
+   for i in range(len(eval)):
+      print(names[i], end=': ')
+      print(eval[i])
 
    y_pred = model.predict(test)
    compare = build_compare_xarray(y_pred, test_labels, keys)
