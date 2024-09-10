@@ -17,7 +17,7 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.layers import Input, MaxPool2D, Conv2D, Conv2DTranspose, \
-   Concatenate, Dropout, LeakyReLU, Dense, Activation, Resizing
+   Concatenate, Dropout, LeakyReLU, Dense, Activation, Resizing#, MaxUnpool2d
 
 
 # %% constants 
@@ -73,9 +73,9 @@ def plot_var(data_plot, i, var, num_var):
                  crs=DATA_CRS)
   ax.coastlines(resolution='50m')
 
-  im = data_plot[var].plot()#cmap=cmr.get_sub_cmap('GnBu', 0, 1),
-                           # cbar_kwargs={"label": 
-                                       #  data_plot[var].attrs['units']})
+  im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1),
+                           cbar_kwargs={"label": 
+                                        data_plot[var].attrs['units']})
 
   plt.title(data_plot[var].attrs['long_name']) #needs to be formatted!!
 
@@ -171,7 +171,7 @@ def read_data(reduce=False):
       print('Preparing data.....')
       data = open_datafile()
 
-      if reduce: # only way to make big dataset work (maybe also consider coarsen)
+      if reduce: 
          data = data.sel(lat=slice(40,55), lon=slice(0,15)) #lat -90 to 90 lon -30 to 60
 
       var_list = list(data.keys())
@@ -228,16 +228,7 @@ def decoder_block(inputs, skip_features, num_filters):
 	
    return x
 
-
-def build_model(x, architecture= ''):
-   '''Build the bones of a convolutional neural network with the same 
-   input and output shape of x. Explain more once I figure out
-   parameters. Then returns the model structure.'''
-
-   if architecture == 'wf_unet':
-      #unet but then each variable runs individually o n the unet then is combined
-      model = Sequential()
-   elif architecture == 'unet':
+def unet_maker(x):
       inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
 
       # Contracting Path (Encoder)
@@ -261,9 +252,60 @@ def build_model(x, architecture= ''):
 
       # Define the model
       model = Model(inputs, outputs, name='U-Net')
+      return model
 
-   elif architecture == 'unet++':
+def build_model(x, architecture= ''):
+   '''Build the bones of a convolutional neural network with the same 
+   input and output shape of x. Explain more once I figure out
+   parameters. Then returns the model structure.'''
+
+   if architecture.lower() == 'wf unet':
+      #unet but then each variable runs individually on the unet then is combined
       model = Sequential()
+   elif architecture.lower() == 'unet':
+      # Paper - U-Net: Convolutional Networks for Biomedical Image Segmentation
+      model = unet_maker(x)
+   elif architecture.lower() == 'cyclone':
+      # Application of Deep Convolutional Neural Networks for Detecting Extreme Weather in Climate Datasets
+      inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
+
+      c1 = Conv2D(filters=8, kernel_size=(5,5), 
+                    activation='relu', 
+                    input_shape=(x.shape[1],x.shape[2],x.shape[3]),
+                    padding='same')(inputs)
+      p1 = MaxPool2D(pool_size = (2, 2), strides = 2)(c1)
+      c2 = Conv2D(filters=16, kernel_size=(5,5), 
+                    activation='relu', 
+                    input_shape=(x.shape[1],x.shape[2],x.shape[3]),
+                    padding='same')(p1)
+      p2 = MaxPool2D(pool_size = (2, 2), strides = 2)(c2)
+      c3 = Dense(50)(p2)
+      c4 = Dense(1)(c3)
+      
+      outputs = Resizing(x.shape[1], x.shape[2])(c4)
+
+      model = Model(inputs, outputs, name='Cyclone')
+      
+   elif architecture == 'river':
+      # Application of Deep Convolutional Neural Networks for Detecting Extreme Weather in Climate Datasets
+      inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
+
+      c1 = Conv2D(filters=8, kernel_size=(12,12), 
+                    activation='relu', 
+                    input_shape=(x.shape[1],x.shape[2],x.shape[3]),
+                    padding='same')(inputs)
+      p1 = MaxPool2D(pool_size = (3, 3), strides = 2)(c1)
+      c2 = Conv2D(filters=16, kernel_size=(12,12), 
+                    activation='relu', 
+                    input_shape=(x.shape[1],x.shape[2],x.shape[3]),
+                    padding='same')(p1)
+      p2 = MaxPool2D(pool_size = (2, 2), strides = 2)(c2)
+      c3 = Dense(200)(p2)
+      c4 = Dense(1)(c3)
+      
+      outputs = Resizing(x.shape[1], x.shape[2])(c4)
+
+      model = Model(inputs, outputs, name='AtmoRiver')
    else:
       print('Original architecture being used (possible name was not known)')
       model = Sequential()
@@ -281,7 +323,8 @@ def build_model(x, architecture= ''):
       model.add(Dropout(0.5))
       model.add(Dense(1))
 
-   model.compile(optimizer='adam', loss='mean_squared_error', metrics=['MeanSquaredLogarithmicError'])
+   model.compile(optimizer='adam', loss='mean_squared_error', 
+                 metrics=['MeanSquaredLogarithmicError', 'recall', 'mean_absolute_error'])
 
    return model
 
@@ -342,7 +385,7 @@ def evaluate_model(model, test, test_labels, keys):
    labels to evaluate the performance.'''
 
    eval = model.evaluate(test, test_labels)
-   names = ['MeanSquaredError', 'MeanSquaredLogarithmicError']
+   names = ['MeanSquaredError', 'MeanSquaredLogarithmicError', 'recall', 'mean_absolute_error']
    for i in range(len(eval)):
       print(names[i], end=': ')
       print(eval[i])
