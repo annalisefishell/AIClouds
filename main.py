@@ -1,6 +1,5 @@
 '''
 To do:
-- adjust data based on size (generator/regional models/gpu/server?)
 - increase evaluation of the model (time)
 '''
 # %% imports
@@ -326,7 +325,7 @@ def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
       print('Building model.....')
-      model = build_model(x, 'original')
+      model = build_model(x, 'unet')
       # print(model.summary())
       model.fit(train, train_label, epochs=EPOCH, batch_size=len(train)//EPOCH, 
           validation_data=(valid, valid_label))
