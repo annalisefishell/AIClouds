@@ -22,7 +22,8 @@ from tensorflow.keras.layers import Input, MaxPool2D, Conv2D, Conv2DTranspose, \
 # reading
 FILEPATH_DATA = ['ERA5-total_cloud_cover-1961-1980-WQBox.nc4', # always make target first
                   'ERA5-total_column_water-1961-1980-WQBox.nc4', 
-                  'ERA5-2m_temperature-1961-1980-WQBox.nc4']
+                  'ERA5-2m_temperature-1961-1980-WQBox.nc4',
+                  'ERA5-total_precipitation-1961-1980-WQBox.nc4']
 FILEPATH_CLEANED_DATA = 'cleaned_data.pkl'
 HAPPY_W_DATA = False
 NUM_FILES = len(FILEPATH_DATA)
@@ -72,18 +73,18 @@ def plot_var(data_plot, i, var, num_var):
                  crs=DATA_CRS)
   ax.coastlines(resolution='50m')
 
-  im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1), add_colorbar=False)
+#   im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1), add_colorbar=False)
 
   if data_plot[var].attrs['units'] == '%':
       im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1), add_colorbar=False, vmin=0,vmax=100)
   else:
       im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1), add_colorbar=False)
 
-  cbar = plt.colorbar(im, ax=ax, shrink=0.9, pad=0.07) 
+  cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.07) 
   cbar.set_label(data_plot[var].attrs['units'])
-  plt.title(data_plot[var].attrs['long_name']) #needs to be formatted!!
+  plt.title(data_plot[var].attrs['long_name'], fontsize=12)
 
-def plot_all_vars(ds, vars, date, filename=''):
+def plot_all_vars(ds, vars, date, filename='', title=''):
    '''Given an xarray dataset, plots all the variables in the 
    variable list given they are geographic in subplots. The 
    save variable chooses whether to show of save in a file.'''
@@ -91,8 +92,8 @@ def plot_all_vars(ds, vars, date, filename=''):
    data_plot = ds.sel(time=slice(date, date))
    num_var = len(vars)
 
-   plt.figure(figsize=(13,5))
-   # plt.title('Variables for %s'%str(date)) # - fix later
+   fig = plt.figure(figsize=(13,5))
+   fig.suptitle(title, fontsize=18)
    for i in range(num_var):
       plot_var(data_plot, i, vars[i], num_var)
 
@@ -325,7 +326,7 @@ def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
       print('Building model.....')
-      model = build_model(x, 'unet')
+      model = build_model(x, 'original')
       # print(model.summary())
       model.fit(train, train_label, epochs=EPOCH, batch_size=len(train)//EPOCH, 
           validation_data=(valid, valid_label))
@@ -385,6 +386,12 @@ def evaluate_model(model, test, test_labels, keys):
    print(y_pred.max())
    compare = build_compare_xarray(y_pred, test_labels, keys)
 
+
+   title = 'Comparison for model using '
+   for var in FILEPATH_DATA[1:]: #data_plot[var].attrs['long_name']
+      var_name = var.split('-')[1]
+      title = title + var_name + ' '
+
    total_off = np.zeros(len(compare['diff_tcc'].values))
    avg = np.zeros(len(compare['diff_tcc'].values))
    i=0
@@ -395,15 +402,17 @@ def evaluate_model(model, test, test_labels, keys):
       i+=1
 
    worst_day_avg = np.where(avg == avg.max())[0][0]
-   plot_all_vars(compare, list(compare.keys()), compare['time'].values[worst_day_avg], 'figures/worst_day.png')
+   plot_all_vars(compare, list(compare.keys()), compare['time'].values[worst_day_avg], 
+                 'figures/worst_day.png', title+'- best day')
    print("The worst day predicted average distance per cell:", avg.max())
    
    best_day_avg = np.where(avg == avg.min())[0][0]
-   plot_all_vars(compare, list(compare.keys()), compare['time'].values[best_day_avg], 'figures/best_day.png')
+   plot_all_vars(compare, list(compare.keys()), compare['time'].values[best_day_avg], 
+                 'figures/best_day.png', title+'- worst day')
    print("The best day predicted average distance per cell:", avg.min())
 
-
-   plot_all_vars(compare, list(compare.keys()), END_DATE, 'figures/comparison.png') # plot multiple days? see when the worst, why?
+   plot_all_vars(compare, list(compare.keys()), END_DATE, 'figures/comparison.png',
+                  title) # plot multiple days? see when the worst, why?
 
 
 
