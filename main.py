@@ -1,6 +1,8 @@
 '''
 To do:
-- increase evaluation of the model (time)
+- document code completely
+- increase evaluation of the model (time) (methods)
+- increase ensemble size for testing
 '''
 # %% imports
 import numpy as np
@@ -11,8 +13,9 @@ import cmasher as cmr
 import math
 import os
 import pickle
+import scipy.stats as st
 from sklearn.model_selection import train_test_split
-import tensorflow as tf
+from tensorflow.keras.backend import clear_session
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.layers import Input, MaxPool2D, Conv2D, Conv2DTranspose, \
    Concatenate, Dropout, LeakyReLU, Dense, Activation, Resizing
@@ -21,9 +24,9 @@ from tensorflow.keras.layers import Input, MaxPool2D, Conv2D, Conv2DTranspose, \
 # %% constants 
 # reading
 FILEPATH_DATA = ['ERA5-total_cloud_cover-1961-1980-WQBox.nc4', # always make target first
-                  'ERA5-total_column_water-1961-1980-WQBox.nc4', 
-                  'ERA5-2m_temperature-1961-1980-WQBox.nc4',
-                  'ERA5-total_precipitation-1961-1980-WQBox.nc4']
+                  'ERA5-total_column_water-1961-1980-WQBox.nc4'] 
+                  # 'ERA5-2m_temperature-1961-1980-WQBox.nc4']
+                  # 'ERA5-total_precipitation-1961-1980-WQBox.nc4']
 FILEPATH_CLEANED_DATA = 'cleaned_data.pkl'
 HAPPY_W_DATA = False
 NUM_FILES = len(FILEPATH_DATA)
@@ -41,13 +44,7 @@ END_DATE = '1979-01-01T00:00:00.000000000'
 # model
 FILEPATH_MODEL = 'model.pkl'
 EVAL_METHODS = ['MeanSquaredError', 'MeanSquaredLogarithmicError', 'recall', 'mean_absolute_error']
-EPOCH = 10
-NUM_FILTERS = 30
-NUM_HIDDEN_LAYERS = 3
-ACTIVATION = 'relu'
-KERNEL_SIZE = (3,3)
-
-
+TEST = True
 
 # %% plotting functions - double check
 def determine_num_subplots(num_var):
@@ -72,8 +69,6 @@ def plot_var(data_plot, i, var, num_var):
                  min(data_plot.lat), max(data_plot.lat)], 
                  crs=DATA_CRS)
   ax.coastlines(resolution='50m')
-
-#   im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1), add_colorbar=False)
 
   if data_plot[var].attrs['units'] == '%':
       im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1), add_colorbar=False, vmin=0,vmax=100)
@@ -171,7 +166,7 @@ def read_data(reduce=False):
       data = open_datafile()
 
       if reduce: 
-         data = data.sel(lat=slice(35, 55), lon=slice(0,15)) #lat -90 to 90 lon -30 to 60 For architecture runs: 40 to 55 and 0 to 15 - for cyclone 70 by 70 worked (try 80 by 80 on a new open)
+         data = data.sel(lat=slice(35, 55), lon=slice(0,15)) #lat -90 to 90 lon -30 to 60 for cyclone 70 by 70 worked (try 80 by 80 on a new open)
 
       var_list = list(data.keys())
       stand_data = standardize(data.sel(time=slice(START_DATE, END_DATE)), var_list)
@@ -221,7 +216,7 @@ def unet_decoder_block(inputs, skip_features, num_filters):
 	
 	# Convolution with 3x3 filter followed by ReLU activation 
    x = Conv2D(num_filters, 3, padding = 'same')(x) 
-   x = tf.keras.layers.Activation('relu')(x) 
+   x = Activation('relu')(x) 
 
 	# Convolution with 3x3 filter followed by ReLU activation 
    x = Conv2D(num_filters, 3, padding = 'same')(x) 
@@ -285,8 +280,8 @@ def new_model_maker(x):
                     padding='same'))
 
    for layer in range(2):
-      model.add(Conv2D(filters=NUM_FILTERS*(layer+1), 
-                       kernel_size=KERNEL_SIZE, activation=ACTIVATION,
+      model.add(Conv2D(filters=32*(layer+1), 
+                       kernel_size=(3,3), activation='relu',
                        padding='same'))
       model.add(LeakyReLU(alpha=0.1))
 
@@ -316,7 +311,7 @@ def build_model(x, architecture= ''):
    
    return model
 
-def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
+def load_model(FILEPATH_MODEL, train, train_label, valid, valid_label):
    '''Check if a CNN model is already built. If so, load the model from 
    the given pickle filepath. If not build it given the dimensions from 
    the dataset x, and save it to the filepath.'''
@@ -326,9 +321,9 @@ def load_model(x, FILEPATH_MODEL, train, train_label, valid, valid_label):
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
       print('Building model.....')
-      model = build_model(x, 'original')
+      model = build_model(df_train, 'cyclone')
       # print(model.summary())
-      model.fit(train, train_label, epochs=EPOCH, batch_size=len(train)//EPOCH, 
+      model.fit(train, train_label, epochs=10, batch_size=len(train)//10, 
           validation_data=(valid, valid_label))
       pickle.dump(model, open(FILEPATH_MODEL, 'wb'))
 
@@ -373,6 +368,88 @@ def build_compare_xarray(pred, real, keys):
    )
    return compare
 
+def confidence_interval(ensemble, confidence=0.95):
+
+   n = len(ensemble)
+   sem = np.std(ensemble, ddof=1) / np.sqrt(n)
+
+   z_score= st.norm.ppf(confidence)
+   # z_score = np.abs(np.percentile(np.random.normal(0, 1, 10**6), [100 * (1-confidence) / 2, 100 * (1 - (1-confidence) / 2)]))
+   margin_of_error = z_score * sem
+
+   confidence_interval = (np.mean(ensemble) - margin_of_error, np.mean(ensemble) + margin_of_error)
+   return confidence_interval
+
+def calc_ensemble_mean_metrics(num_simulations, train, train_label, valid, valid_label):
+   # need to make this depedent on metrics list
+   mse = np.zeros(num_simulations)
+   msle = np.zeros(num_simulations)
+   recall = np.zeros(num_simulations)
+   mae = np.zeros(num_simulations)
+
+   for i in range(num_simulations):
+      model = load_model(FILEPATH_MODEL, train,
+                  train_label, valid, valid_label)
+   
+      eval = model.evaluate(x_test, y_test)
+      mse[i] = eval[0]
+      msle[i] = eval[1]
+      recall[i] = eval[2]
+      mae[i] = eval[3]
+
+   print('MSE mean:', round(sum(mse)/num_simulations,5))
+   print('MSLE mean:', round(sum(msle)/num_simulations,5))
+   print('Recall mean:', round(sum(recall)/num_simulations,5))
+   print('MAE mean:', round(sum(mae)/num_simulations,5))
+
+   # not completely correct yet, gives two arrays
+   print('MSE conf:', confidence_interval(mse))
+   print('MSLE conf:', confidence_interval(msle))
+   print('Recall conf:', confidence_interval(recall))
+   print('MAE conf:', confidence_interval(mae))
+
+
+   # histogram of the errors to see distributions
+   fig = plt.figure(figsize=(13,10))
+   fig.suptitle('Distributions of metrics', fontsize=18)
+
+   ax = plt.subplot(2, 2, 1)
+   counts, bins = np.histogram(mse)
+   ax.hist(bins[:-1], bins, weights=counts)
+   ax.set_title('Mean Squared Error')
+
+   ax = plt.subplot(2, 2, 2)
+   counts, bins = np.histogram(msle)
+   ax.hist(bins[:-1], bins, weights=counts)
+   ax.set_title('Mean Squared Logarithmic Error')
+
+   ax = plt.subplot(2, 2, 3)
+   counts, bins = np.histogram(recall)
+   ax.hist(bins[:-1], bins, weights=counts)
+   ax.set_title('recall')
+
+   ax = plt.subplot(2, 2, 4)
+   counts, bins = np.histogram(mae)
+   ax.hist(bins[:-1], bins, weights=counts)
+   ax.set_title('Mean Absolute Error')
+
+   plt.savefig('figures/distributions')
+
+   return mse, msle, recall, mae
+
+def calc_diff_metrics(compare):
+   total_off = np.zeros(len(compare['diff_tcc'].values))
+   avg = np.zeros(len(compare['diff_tcc'].values))
+   i=0
+
+   for day in compare['diff_tcc'].values:
+      day = np.absolute(day)
+      total_off[i] = day.sum()
+      avg[i] = total_off[i]/(day.shape[0]*day.shape[1])
+      i+=1
+
+   return total_off, avg
+
 def evaluate_model(model, test, test_labels, keys):
    '''Given a trained model, use the test dataset and corect 
    labels to evaluate the performance.'''
@@ -386,20 +463,12 @@ def evaluate_model(model, test, test_labels, keys):
    print(y_pred.max())
    compare = build_compare_xarray(y_pred, test_labels, keys)
 
+   total_off, avg = calc_diff_metrics(compare)
 
    title = 'Comparison for model using '
-   for var in FILEPATH_DATA[1:]: #data_plot[var].attrs['long_name']
+   for var in FILEPATH_DATA[1:]:
       var_name = var.split('-')[1]
       title = title + var_name + ' '
-
-   total_off = np.zeros(len(compare['diff_tcc'].values))
-   avg = np.zeros(len(compare['diff_tcc'].values))
-   i=0
-   for day in compare['diff_tcc'].values:
-      day = np.absolute(day)
-      total_off[i] = day.sum()
-      avg[i] = total_off[i]/(day.shape[0]*day.shape[1])
-      i+=1
 
    worst_day_avg = np.where(avg == avg.max())[0][0]
    plot_all_vars(compare, list(compare.keys()), compare['time'].values[worst_day_avg], 
@@ -412,12 +481,12 @@ def evaluate_model(model, test, test_labels, keys):
    print("The best day predicted average distance per cell:", avg.min())
 
    plot_all_vars(compare, list(compare.keys()), END_DATE, 'figures/comparison.png',
-                  title) # plot multiple days? see when the worst, why?
+                  title) 
 
 
 
 # %% main
-tf.keras.backend.clear_session()
+clear_session()
 
 var_list, keys, x_train, y_train, x_test, y_test = read_data(NUM_FILES!=0)
 
@@ -425,7 +494,11 @@ df_train, df_valid, df_train_label, df_valid_label = train_test_split(x_train, y
                                                                      test_size=0.2,
                                                                      random_state=13)
 
-model = load_model(df_train, FILEPATH_MODEL, df_train,
-                  df_train_label, df_valid, df_valid_label)
-
-evaluate_model(model, x_test, y_test, keys)
+if TEST:
+   # Multiple - create ensembles
+   calc_ensemble_mean_metrics(30, df_train, df_train_label, df_valid, df_valid_label)
+else:
+   # One model
+   model = load_model(FILEPATH_MODEL, df_train,
+                     df_train_label, df_valid, df_valid_label)
+   evaluate_model(model, x_test, y_test, keys)
