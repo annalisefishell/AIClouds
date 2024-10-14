@@ -22,34 +22,41 @@ from tensorflow.keras.layers import Input, MaxPool2D, Conv2D, Conv2DTranspose, \
 
 
 # %% constants 
-# reading
-FILEPATH_DATA = ['ERA5-total_cloud_cover-1961-1980-WQBox.nc4', # always make target first
-                  'ERA5-total_column_water-1961-1980-WQBox.nc4'] 
-                  # 'ERA5-2m_temperature-1961-1980-WQBox.nc4']
-                  # 'ERA5-total_precipitation-1961-1980-WQBox.nc4']
+# reading data
+FILEPATH_DATA = ['variables/ERA5-total_cloud_cover-1961-1980-WQBox.nc4', # always make target first
+                  'variables/ERA5-total_column_water-1961-1980-WQBox.nc4'] 
+                  # 'variables/ERA5-2m_temperature-1961-1980-WQBox.nc4',
+                  # 'variables/ERA5-total_precipitation-1961-1980-WQBox.nc4']
 FILEPATH_CLEANED_DATA = 'cleaned_data.pkl'
 HAPPY_W_DATA = False
-NUM_FILES = len(FILEPATH_DATA)
-
-# plotting
-DATA_CRS = ccrs.PlateCarree()
-CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1), 
-        cmr.get_sub_cmap('coolwarm', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1)] # make a dict
+NUM_VARS = len(FILEPATH_DATA)
+FILEPATH_MASKS = ['variables/ERA5_elevation-WQBox.nc',
+                  'variables/ERA5-land_sea_mask-WQBox.nc']
+NUM_MASKS = len(FILEPATH_MASKS)
 
 # dates
 START_DATE = '1961-01-01T00:00:00.000000000'
 SPLIT_DATE = '1975-01-01T00:00:00.000000000'
 END_DATE = '1979-01-01T00:00:00.000000000'
 
+# plotting
+DATA_CRS = ccrs.PlateCarree()
+CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1), 
+        cmr.get_sub_cmap('coolwarm', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1)] # make a dict
+
 # model
 FILEPATH_MODEL = 'model.pkl'
+HAPPY_W_MODEL = False
+
+# evaluation
 EVAL_METHODS = ['MeanSquaredError', 'MeanSquaredLogarithmicError', 'recall', 'mean_absolute_error']
-TEST = True
+TEST = False
+ENSEMBLE_SIZE = 40
 
 # %% plotting functions - double check
 def determine_num_subplots(num_var):
-   '''Determine how many subplots are needed and define the 
-   subsequent square dimensions of those plots'''
+   '''Based on how many subplots are needed, calculate the dimensions for 
+   the plots'''
 
    if num_var <= 3:
       x, y = 1, num_var
@@ -58,19 +65,18 @@ def determine_num_subplots(num_var):
 
    return x, y
 
-def plot_var(data_plot, i, var, num_var):
-  '''Given a slice of an xarray dataset and a specific variable, 
-  plots the matrix of the region. Also needs specification on the
-  index and number of variables for the allocation of the subplot'''
+def plot_var(data_plot, var, subplot, x_dim, y_dim):
+  '''Given a slice of an xarray dataset and a specific variable, plots the 
+  values of the region. Also needs specification on the index x dimension
+  and y dimension for the allocation of the subplot'''
 
-  x,y = determine_num_subplots(num_var)
-  ax = plt.subplot(x, y, i+1, projection=DATA_CRS)
+  ax = plt.subplot(x_dim, y_dim, subplot+1, projection=DATA_CRS)
   ax.set_extent([min(data_plot.lon), max(data_plot.lon), 
                  min(data_plot.lat), max(data_plot.lat)], 
                  crs=DATA_CRS)
   ax.coastlines(resolution='50m')
 
-  if data_plot[var].attrs['units'] == '%':
+  if data_plot[var].attrs['units'] == '%':    # need to implement the use of colorbars
       im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1), add_colorbar=False, vmin=0,vmax=100)
   else:
       im = data_plot[var].plot(cmap=cmr.get_sub_cmap('GnBu', 0, 1), add_colorbar=False)
@@ -80,17 +86,19 @@ def plot_var(data_plot, i, var, num_var):
   plt.title(data_plot[var].attrs['long_name'], fontsize=12)
 
 def plot_all_vars(ds, vars, date, filename='', title=''):
-   '''Given an xarray dataset, plots all the variables in the 
-   variable list given they are geographic in subplots. The 
-   save variable chooses whether to show of save in a file.'''
+   '''Given an xarray dataset, plots all the variables in the variable 
+   list in subplots. Only works on geogaphic data, on a single day. Can 
+   also save the plot and give a title.'''
 
    data_plot = ds.sel(time=slice(date, date))
    num_var = len(vars)
 
    fig = plt.figure(figsize=(13,5))
    fig.suptitle(title, fontsize=18)
+
+   x,y = determine_num_subplots(num_var)
    for i in range(num_var):
-      plot_var(data_plot, i, vars[i], num_var)
+      plot_var(data_plot, vars[i], i, x, y)
 
    if filename != '':
       plt.savefig(filename)
@@ -103,38 +111,53 @@ def plot_all_vars(ds, vars, date, filename='', title=''):
 def standardize(ds, vars):
    '''Standardize all the variables in a dataset using the min-max normalization 
    scaling, and returns the standardized dataset as an Xarray.DataArray.'''
-   # Chose this method because we are using neural networks and need the final product in a specific range (0-100) - A method of improved CNN traffic classification Zhou (2017)
 
    for var in vars:
       ds[var] = (ds[var] - ds[var].values.min())/(ds[var].values.max() - ds[var].values.min())
-      # ds[var] = ((ds[var]-ds[var].values.mean())/ds[var].values.std())
    return ds
 
 def reshape_vars(ds, vars):
-   '''Given a dataset, seperates the independent and dependent variables and 
-   reshapes the arrays to fit the model format. Returns both the numpy arrays.'''
+   '''Given a dataset, seperates the independent and dependent variables and reshapes the 
+   arrays to fit the model format (number of data points, number of latitude points, 
+   number of longitude points, number of variables). Returns both as numpy arrays.'''
    
    X = []
    for i in range(len(vars)-1):
       X.append(ds[vars[i+1]])
-
    X = np.moveaxis(np.asarray(X), 0, -1)
-   Y = np.expand_dims(ds[vars[0]].values, 3)
 
+   Y = np.expand_dims(ds[vars[0]].values, 3)
    return X,Y
 
-def open_datafile():
-   '''Read the data combine and return subsequent files into one 
-   Xarray.DataArray'''
+def reshape_masks(masks, train_shape, test_shape): #
+   x_masks = [] # would really like to combine this with the other reshape function
+   for var in list(masks.keys()):
+      if masks[var].max() > 2: # filter out binary values - im sure there is a better way
+         # masks[var] = standardize(masks, var) - hope I can implement this
+         masks[var] = (masks[var] - masks[var].values.min())/(masks[var].values.max() - masks[var].values.min())
+      x_masks.append(masks[var])
+   x_masks = np.moveaxis(np.array(x_masks), 0, -1)
 
-   data = xr.open_dataset(FILEPATH_DATA[0])
-   for i in range(NUM_FILES-1):
-      t = xr.open_dataset(FILEPATH_DATA[i+1])
-      data = xr.merge([data, t])
+   x_masks_train = np.tile(x_masks,(train_shape, 1, 1, 1))
+   x_masks_test = np.tile(x_masks,(test_shape, 1, 1, 1))
    
+   return x_masks_train, x_masks_test
+
+def read_datafile(path, num_vars):
+   '''Read multiple file paths and then combine subsequent files into one 
+   Xarray.DataArray and return it.'''
+
+   data=0
+   if num_vars>0:
+
+      data = xr.open_dataset(path[0])
+      for i in range(num_vars-1):
+         t = xr.open_dataset(path[i+1])
+         data = xr.merge([data, t])
+
    return data
 
-def get_key_info(ds):
+def get_key_info(ds): # still need to work from here down
    '''Get a list of numpy arrays containing the unique values of each 
    corrisponding index variable from a dataset where the indicies are time,
    longitude and latitude'''
@@ -146,12 +169,12 @@ def get_key_info(ds):
    
    return keys
 
-def read_data(reduce=False):
+def process_data(reduce=False):
    '''Given a file path, checks if the data was already read and processed. If yes, 
    obtains only the cleaned data. If not, opens the data, cleans it, and saves it
    in a new file. Returns both the data and a list of present variables.'''
    
-   if os.path.isfile(FILEPATH_CLEANED_DATA) and True:
+   if os.path.isfile(FILEPATH_CLEANED_DATA) and HAPPY_W_DATA:
       print('Data already preprocessed')
       with open(FILEPATH_CLEANED_DATA, 'rb') as f:
          loaded_dict = pickle.load(f)
@@ -163,16 +186,26 @@ def read_data(reduce=False):
          y_test = loaded_dict['y_test']
    else:
       print('Preparing data.....')
-      data = open_datafile()
+      data = read_datafile(FILEPATH_DATA, NUM_VARS)
+      if NUM_MASKS > 0:
+         masks = read_datafile(FILEPATH_MASKS, NUM_MASKS)
 
       if reduce: 
          data = data.sel(lat=slice(35, 55), lon=slice(0,15)) #lat -90 to 90 lon -30 to 60 for cyclone 70 by 70 worked (try 80 by 80 on a new open)
+         if NUM_MASKS > 0:
+            masks = masks.sel(latitude=slice(55, 35), longitude=slice(0,15))
 
       var_list = list(data.keys())
       stand_data = standardize(data.sel(time=slice(START_DATE, END_DATE)), var_list)
+      keys = get_key_info(data)
+
       x_train, y_train = reshape_vars(stand_data.sel(time=slice(START_DATE, SPLIT_DATE)), var_list)
       x_test, y_test = reshape_vars(stand_data.sel(time=slice(SPLIT_DATE, END_DATE)), var_list) 
-      keys = get_key_info(data)
+
+      if NUM_MASKS > 0:
+         x_masks_train, x_masks_test = reshape_masks(masks, x_train.shape[0], x_test.shape[0])
+         x_train = np.concatenate((x_train, x_masks_train), axis=-1)
+         x_test = np.concatenate((x_test, x_masks_test), axis=-1)
 
       plot_all_vars(data, var_list, SPLIT_DATE, 'figures/original_data.png')
       data.close()
@@ -316,7 +349,7 @@ def load_model(FILEPATH_MODEL, train, train_label, valid, valid_label):
    the given pickle filepath. If not build it given the dimensions from 
    the dataset x, and save it to the filepath.'''
 
-   if os.path.isfile(FILEPATH_MODEL) and HAPPY_W_DATA:
+   if os.path.isfile(FILEPATH_MODEL) and HAPPY_W_MODEL:
       print('Model already built')
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
@@ -324,7 +357,7 @@ def load_model(FILEPATH_MODEL, train, train_label, valid, valid_label):
       model = build_model(df_train, 'cyclone')
       # print(model.summary())
       model.fit(train, train_label, epochs=10, batch_size=len(train)//10, 
-          validation_data=(valid, valid_label))
+          validation_data=(valid, valid_label), verbose=0)
       pickle.dump(model, open(FILEPATH_MODEL, 'wb'))
 
    return model
@@ -472,12 +505,12 @@ def evaluate_model(model, test, test_labels, keys):
 
    worst_day_avg = np.where(avg == avg.max())[0][0]
    plot_all_vars(compare, list(compare.keys()), compare['time'].values[worst_day_avg], 
-                 'figures/worst_day.png', title+'- best day')
+                 'figures/worst_day.png', title+'- worst day')
    print("The worst day predicted average distance per cell:", avg.max())
    
    best_day_avg = np.where(avg == avg.min())[0][0]
    plot_all_vars(compare, list(compare.keys()), compare['time'].values[best_day_avg], 
-                 'figures/best_day.png', title+'- worst day')
+                 'figures/best_day.png', title+'- best day')
    print("The best day predicted average distance per cell:", avg.min())
 
    plot_all_vars(compare, list(compare.keys()), END_DATE, 'figures/comparison.png',
@@ -488,15 +521,17 @@ def evaluate_model(model, test, test_labels, keys):
 # %% main
 clear_session()
 
-var_list, keys, x_train, y_train, x_test, y_test = read_data(NUM_FILES!=0)
+var_list, keys, x_train, y_train, x_test, y_test = process_data(NUM_VARS!=0)
 
 df_train, df_valid, df_train_label, df_valid_label = train_test_split(x_train, y_train, 
                                                                      test_size=0.2,
                                                                      random_state=13)
 
+# here make that the mask variables work
 if TEST:
    # Multiple - create ensembles
-   calc_ensemble_mean_metrics(30, df_train, df_train_label, df_valid, df_valid_label)
+   calc_ensemble_mean_metrics(ENSEMBLE_SIZE, df_train, df_train_label, df_valid, 
+                              df_valid_label)
 else:
    # One model
    model = load_model(FILEPATH_MODEL, df_train,
