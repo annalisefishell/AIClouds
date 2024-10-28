@@ -2,7 +2,6 @@
 To do:
 - document code completely
 - increase evaluation of the model (time) (methods)
-- increase ensemble size for testing
 '''
 # %% imports
 import numpy as np
@@ -10,6 +9,7 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cmasher as cmr
+import time
 import math
 import os
 import pickle
@@ -24,14 +24,14 @@ from tensorflow.keras.layers import Input, MaxPool2D, Conv2D, Conv2DTranspose, \
 # %% constants 
 # reading data
 FILEPATH_DATA = ['variables/ERA5-total_cloud_cover-1961-1980-WQBox.nc4', # always make target first
-                  'variables/ERA5-total_column_water-1961-1980-WQBox.nc4'] 
-                  # 'variables/ERA5-2m_temperature-1961-1980-WQBox.nc4',
+                  'variables/ERA5-total_column_water-1961-1980-WQBox.nc4', 
+                  'variables/ERA5-2m_temperature-1961-1980-WQBox.nc4']
                   # 'variables/ERA5-total_precipitation-1961-1980-WQBox.nc4']
 FILEPATH_CLEANED_DATA = 'cleaned_data.pkl'
-HAPPY_W_DATA = False
+HAPPY_W_DATA = True
 NUM_VARS = len(FILEPATH_DATA)
-FILEPATH_MASKS = ['variables/ERA5_elevation-WQBox.nc',
-                  'variables/ERA5-land_sea_mask-WQBox.nc']
+FILEPATH_MASKS = [] #'variables/ERA5_elevation-WQBox.nc',
+                  # 'variables/ERA5-land_sea_mask-WQBox.nc']
 NUM_MASKS = len(FILEPATH_MASKS)
 
 # dates
@@ -47,11 +47,13 @@ CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1),
 # model
 FILEPATH_MODEL = 'model.pkl'
 HAPPY_W_MODEL = False
+ARCHITECTURE = 'unet' #['river', 'cyclone', 'unet', 'other']
 
 # evaluation
-EVAL_METHODS = ['MeanSquaredError', 'MeanSquaredLogarithmicError', 'recall', 'mean_absolute_error']
-TEST = False
-ENSEMBLE_SIZE = 40
+EVAL_METHODS = ['MeanSquaredError', 'MeanSquaredLogarithmicError', 'mean_absolute_error']
+TEST = True
+ENSEMBLE_SIZE = 120
+START_TIME = time.time()
 
 # %% plotting functions - double check
 def determine_num_subplots(num_var):
@@ -354,7 +356,7 @@ def load_model(FILEPATH_MODEL, train, train_label, valid, valid_label):
       model = pickle.load(open(FILEPATH_MODEL, 'rb'))
    else:
       print('Building model.....')
-      model = build_model(df_train, 'cyclone')
+      model = build_model(df_train, ARCHITECTURE)
       # print(model.summary())
       model.fit(train, train_label, epochs=10, batch_size=len(train)//10, 
           validation_data=(valid, valid_label), verbose=0)
@@ -417,8 +419,8 @@ def calc_ensemble_mean_metrics(num_simulations, train, train_label, valid, valid
    # need to make this depedent on metrics list
    mse = np.zeros(num_simulations)
    msle = np.zeros(num_simulations)
-   recall = np.zeros(num_simulations)
    mae = np.zeros(num_simulations)
+   times = np.zeros(num_simulations)
 
    for i in range(num_simulations):
       model = load_model(FILEPATH_MODEL, train,
@@ -427,48 +429,76 @@ def calc_ensemble_mean_metrics(num_simulations, train, train_label, valid, valid
       eval = model.evaluate(x_test, y_test)
       mse[i] = eval[0]
       msle[i] = eval[1]
-      recall[i] = eval[2]
-      mae[i] = eval[3]
+      mae[i] = eval[2]
+      times[i] = time.time() - sum(times) - START_TIME
 
    print('MSE mean:', round(sum(mse)/num_simulations,5))
    print('MSLE mean:', round(sum(msle)/num_simulations,5))
-   print('Recall mean:', round(sum(recall)/num_simulations,5))
    print('MAE mean:', round(sum(mae)/num_simulations,5))
+   print('Time mean', round(sum(times)/num_simulations,5))
 
    # not completely correct yet, gives two arrays
    print('MSE conf:', confidence_interval(mse))
    print('MSLE conf:', confidence_interval(msle))
-   print('Recall conf:', confidence_interval(recall))
    print('MAE conf:', confidence_interval(mae))
-
+   print('Time mean', confidence_interval(times))
 
    # histogram of the errors to see distributions
-   fig = plt.figure(figsize=(13,10))
-   fig.suptitle('Distributions of metrics', fontsize=18)
+   fig = plt.figure(figsize=(10,10))
+   title = 'Distribution of metrics for architecht: ' + ARCHITECTURE + '\nwith variables '
+   for var in FILEPATH_DATA[1:]:
+      var_name = var.split('-')[1]
+      title = title + var_name + ', '
+   fig.suptitle(title, fontsize=18)
 
    ax = plt.subplot(2, 2, 1)
    counts, bins = np.histogram(mse)
-   ax.hist(bins[:-1], bins, weights=counts)
-   ax.set_title('Mean Squared Error')
+   ax.hist(bins[:-1], bins, weights=counts, density=True,
+           color='#607c8e', alpha=0.8,  rwidth=0.9)
+   ax.grid(axis='y', alpha=0.6)
+   ax.set_xlabel('Mean squared error', fontsize=12)
+   ax.set_ylabel("Density", fontsize=12)
+   kde = st.gaussian_kde(mse)
+   x = np.linspace(min(mse), max(mse), 1000)
+   y = kde(x)
+   ax.plot(x, y)
 
    ax = plt.subplot(2, 2, 2)
    counts, bins = np.histogram(msle)
-   ax.hist(bins[:-1], bins, weights=counts)
-   ax.set_title('Mean Squared Logarithmic Error')
+   ax.hist(bins[:-1], bins, weights=counts, density=True,
+           color='#607c8e', alpha=0.8,  rwidth=0.9)
+   ax.grid(axis='y', alpha=0.6)
+   ax.set_xlabel('Mean squared logarithmic error', fontsize=12)
+   kde = st.gaussian_kde(msle)
+   x = np.linspace(min(msle), max(msle), 1000)
+   y = kde(x)
+   ax.plot(x, y)
 
    ax = plt.subplot(2, 2, 3)
-   counts, bins = np.histogram(recall)
-   ax.hist(bins[:-1], bins, weights=counts)
-   ax.set_title('recall')
+   counts, bins = np.histogram(mae)
+   ax.hist(bins[:-1], bins, weights=counts, density=True,
+           color='#607c8e', alpha=0.8,  rwidth=0.9)
+   ax.grid(axis='y', alpha=0.6)
+   ax.set_xlabel('Mean absolute error', fontsize=12)
+   kde = st.gaussian_kde(mae)
+   x = np.linspace(min(mae), max(mae), 1000)
+   y = kde(x)
+   ax.plot(x, y)
 
    ax = plt.subplot(2, 2, 4)
-   counts, bins = np.histogram(mae)
-   ax.hist(bins[:-1], bins, weights=counts)
-   ax.set_title('Mean Absolute Error')
+   counts, bins = np.histogram(times)
+   ax.hist(bins[:-1], bins, weights=counts, density=True,
+           color='#607c8e', alpha=0.8,  rwidth=0.9)
+   ax.grid(axis='y', alpha=0.6)
+   ax.set_xlabel('Time (s)', fontsize=12)
+   kde = st.gaussian_kde(times)
+   x = np.linspace(min(times), max(times), 1000)
+   y = kde(x)
+   ax.plot(x, y)
 
    plt.savefig('figures/distributions')
 
-   return mse, msle, recall, mae
+   return mse, msle, mae 
 
 def calc_diff_metrics(compare):
    total_off = np.zeros(len(compare['diff_tcc'].values))
