@@ -47,7 +47,7 @@ CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1),
 # model
 FILEPATH_MODEL = 'model.pkl'
 HAPPY_W_MODEL = False
-ARCHITECTURE = 'unet' #['river', 'cyclone', 'unet', 'other']
+ARCHITECTURE = 'cyclone' #choose from 'river', 'cyclone', 'unet', or 'initial'
 
 # evaluation
 EVAL_METHODS = ['MeanSquaredError', 'MeanSquaredLogarithmicError', 'mean_absolute_error']
@@ -118,7 +118,7 @@ def standardize(ds, vars):
       ds[var] = (ds[var] - ds[var].values.min())/(ds[var].values.max() - ds[var].values.min())
    return ds
 
-def reshape_vars(ds, vars):
+def reshape_vars(ds, vars): # try to combine with reshape masks
    '''Given a dataset, seperates the independent and dependent variables and reshapes the 
    arrays to fit the model format (number of data points, number of latitude points, 
    number of longitude points, number of variables). Returns both as numpy arrays.'''
@@ -159,10 +159,9 @@ def read_datafile(path, num_vars):
 
    return data
 
-def get_key_info(ds): # still need to work from here down
-   '''Get a list of numpy arrays containing the unique values of each 
-   corrisponding index variable from a dataset where the indicies are time,
-   longitude and latitude'''
+def get_key_info(ds):
+   '''Given a dataset, returns a list of numpy arrays containing the unique values of each 
+   corrisponding index variable where the unique attributes are time, lat and lon'''
 
    start_index = np.where(ds.time.values == np.datetime64(START_DATE))
    end_index = np.where(ds.time.values == np.datetime64(END_DATE))
@@ -171,8 +170,42 @@ def get_key_info(ds): # still need to work from here down
    
    return keys
 
-def process_data(reduce=False):
-   '''Given a file path, checks if the data was already read and processed. If yes, 
+def process_data(reduce):
+   '''Given data files, reads them, combindes them into one XArray Dataset. It is assumed 
+   that there is always data, but not necessarily masks.If the region needs to be reduced, 
+   it is, to the desired region. From this dataset, the variables and keys are extracted 
+   and the data is standardized. Finally, the datasets are split along the test and train 
+   based on the dates defined in constants'''
+
+   data = read_datafile(FILEPATH_DATA, NUM_VARS)
+   if NUM_MASKS > 0:
+      masks = read_datafile(FILEPATH_MASKS, NUM_MASKS)
+
+   if reduce: 
+      data = data.sel(lat=slice(35, 55), lon=slice(0,15)) #lat -90 to 90 lon -30 to 60 for cyclone 70 by 70 worked (try 80 by 80 on a new open)
+      if NUM_MASKS > 0:
+         masks = masks.sel(latitude=slice(55, 35), longitude=slice(0,15))
+
+   var_list = list(data.keys())
+   stand_data = standardize(data.sel(time=slice(START_DATE, END_DATE)), var_list)
+   keys = get_key_info(data)
+
+   x_train, y_train = reshape_vars(stand_data.sel(time=slice(START_DATE, SPLIT_DATE)), var_list)
+   x_test, y_test = reshape_vars(stand_data.sel(time=slice(SPLIT_DATE, END_DATE)), var_list) 
+
+   if NUM_MASKS > 0:
+      x_masks_train, x_masks_test = reshape_masks(masks, x_train.shape[0], x_test.shape[0])
+      x_train = np.concatenate((x_train, x_masks_train), axis=-1)
+      x_test = np.concatenate((x_test, x_masks_test), axis=-1)
+
+   plot_all_vars(data, var_list, SPLIT_DATE, 'figures/original_data.png')
+   data.close()
+
+   return var_list, keys, x_train, y_train, x_test, y_test
+
+def get_data(reduce=False):
+   '''Using a list of filepaths for the data, and a file path for the location of the 
+   cleaned data, checks if the data was already read and processed. If yes, 
    obtains only the cleaned data. If not, opens the data, cleans it, and saves it
    in a new file. Returns both the data and a list of present variables.'''
    
@@ -188,29 +221,7 @@ def process_data(reduce=False):
          y_test = loaded_dict['y_test']
    else:
       print('Preparing data.....')
-      data = read_datafile(FILEPATH_DATA, NUM_VARS)
-      if NUM_MASKS > 0:
-         masks = read_datafile(FILEPATH_MASKS, NUM_MASKS)
-
-      if reduce: 
-         data = data.sel(lat=slice(35, 55), lon=slice(0,15)) #lat -90 to 90 lon -30 to 60 for cyclone 70 by 70 worked (try 80 by 80 on a new open)
-         if NUM_MASKS > 0:
-            masks = masks.sel(latitude=slice(55, 35), longitude=slice(0,15))
-
-      var_list = list(data.keys())
-      stand_data = standardize(data.sel(time=slice(START_DATE, END_DATE)), var_list)
-      keys = get_key_info(data)
-
-      x_train, y_train = reshape_vars(stand_data.sel(time=slice(START_DATE, SPLIT_DATE)), var_list)
-      x_test, y_test = reshape_vars(stand_data.sel(time=slice(SPLIT_DATE, END_DATE)), var_list) 
-
-      if NUM_MASKS > 0:
-         x_masks_train, x_masks_test = reshape_masks(masks, x_train.shape[0], x_test.shape[0])
-         x_train = np.concatenate((x_train, x_masks_train), axis=-1)
-         x_test = np.concatenate((x_test, x_masks_test), axis=-1)
-
-      plot_all_vars(data, var_list, SPLIT_DATE, 'figures/original_data.png')
-      data.close()
+      var_list, keys, x_train, y_train, x_test, y_test = process_data(reduce)
       
       with open(FILEPATH_CLEANED_DATA, 'wb') as f:
          pickle.dump({'variables': var_list, 'keys': keys,
@@ -221,8 +232,8 @@ def process_data(reduce=False):
 
 
 
-# %% model funcions - double check
-def unet_encoder_block(inputs, num_filters, bottleneck=False): 
+# %% model funcions
+def unet_encoder_block(inputs, num_filters, bottleneck=False): # work on documentation here down
    #geeksforgeeks
   
    # Convolution with 3x3 filter followed by ReLU activation 
@@ -260,6 +271,8 @@ def unet_decoder_block(inputs, skip_features, num_filters):
    return x
 
 def unet_maker(x):
+      '''Builds a model with U-Net architecture 
+      '''
       inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
 
       # Contracting Path (Encoder)
@@ -286,7 +299,6 @@ def unet_maker(x):
       return model
 
 def weather_model_maker(x, filters_n_kernels):
-      # Application of Deep Convolutional Neural Networks for Detecting Extreme Weather in Climate Datasets
       inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
 
       c1 = Conv2D(filters=filters_n_kernels[0], kernel_size=filters_n_kernels[1], 
@@ -299,15 +311,15 @@ def weather_model_maker(x, filters_n_kernels):
                     input_shape=(x.shape[1],x.shape[2],x.shape[3]),
                     padding='same')(p1)
       p2 = MaxPool2D(pool_size = filters_n_kernels[5], strides = 2)(c2)
-      c3 = Dense(filters_n_kernels[6])(p2)
-      c4 = Dense(1, activation='sigmoid')(c3) # mention sigmoid needed for percentage range
+      c3 = Dense(filters_n_kernels[6], activation='relu')(p2)
+      c4 = Dense(1, activation='sigmoid')(c3)
       
       outputs = Resizing(x.shape[1], x.shape[2])(c4)
 
       model = Model(inputs, outputs)
       return model
 
-def new_model_maker(x):
+def initial_model_maker(x):
    model = Sequential()
    model.add(Conv2D(filters=30, kernel_size=(3,3), 
                     activation='relu', 
@@ -326,22 +338,24 @@ def new_model_maker(x):
    return model
 
 def build_model(x, architecture= ''):
-   '''Build the bones of a convolutional neural network with the same 
-   input and output shape of x. Explain more once I figure out
-   parameters. Then returns the model structure.'''
+   '''Gathers the parameters from the desired architecture and compiles 
+   and returns the model.'''
 
    if architecture.lower() == 'unet':
-      # Paper - U-Net: Convolutional Networks for Biomedical Image Segmentation
+      # Paper: Convolutional Networks for Biomedical Image Segmentation
       model = unet_maker(x)
    elif architecture.lower() == 'cyclone':
-      # Application of Deep Convolutional Neural Networks for Detecting Extreme Weather in Climate Datasets
+      # Paper: Application of Deep Convolutional Neural Networks for Detecting 
+      # Extreme Weather in Climate Datasets
       model = weather_model_maker(x, [8, (5,5), (2,2), 16, (5,5), (2,2), 50])
    elif architecture == 'river':
-      # Application of Deep Convolutional Neural Networks for Detecting Extreme Weather in Climate Datasets
+      # Paper: Application of Deep Convolutional Neural Networks for Detecting 
+      # Extreme Weather in Climate Datasets
       model = weather_model_maker(x, [8, (12,12), (3,3), 16, (12,12), (2,2), 200])
    else:
       print('Original architecture being used (possible name was not known)')
-      model = new_model_maker(x)
+      model = initial_model_maker(x)
+
    model.compile(optimizer='adam', loss= EVAL_METHODS[0], metrics=EVAL_METHODS[1:])
    
    return model
@@ -403,19 +417,7 @@ def build_compare_xarray(pred, real, keys):
    )
    return compare
 
-def confidence_interval(ensemble, confidence=0.95):
-
-   n = len(ensemble)
-   sem = np.std(ensemble, ddof=1) / np.sqrt(n)
-
-   z_score= st.norm.ppf(confidence)
-   # z_score = np.abs(np.percentile(np.random.normal(0, 1, 10**6), [100 * (1-confidence) / 2, 100 * (1 - (1-confidence) / 2)]))
-   margin_of_error = z_score * sem
-
-   confidence_interval = (np.mean(ensemble) - margin_of_error, np.mean(ensemble) + margin_of_error)
-   return confidence_interval
-
-def calc_ensemble_mean_metrics(num_simulations, train, train_label, valid, valid_label):
+def calc_ensemble_metrics(num_simulations, train, train_label, valid, valid_label):
    # need to make this depedent on metrics list
    mse = np.zeros(num_simulations)
    msle = np.zeros(num_simulations)
@@ -432,71 +434,26 @@ def calc_ensemble_mean_metrics(num_simulations, train, train_label, valid, valid
       mae[i] = eval[2]
       times[i] = time.time() - sum(times) - START_TIME
 
-   print('MSE mean:', round(sum(mse)/num_simulations,5))
-   print('MSLE mean:', round(sum(msle)/num_simulations,5))
-   print('MAE mean:', round(sum(mae)/num_simulations,5))
-   print('Time mean', round(sum(times)/num_simulations,5))
+   with open('metrics/'+ARCHITECTURE+'.txt', 'a') as f:
+      f.write('MSE: ')
+      for i in range(num_simulations):
+         f.write(str(mse[i])+' ')
+      f.write('\n')
 
-   # not completely correct yet, gives two arrays
-   print('MSE conf:', confidence_interval(mse))
-   print('MSLE conf:', confidence_interval(msle))
-   print('MAE conf:', confidence_interval(mae))
-   print('Time mean', confidence_interval(times))
+      f.write('MSLE: ')
+      for i in range(num_simulations):
+         f.write(str(msle[i])+' ')
+      f.write('\n')
 
-   # histogram of the errors to see distributions
-   fig = plt.figure(figsize=(10,10))
-   title = 'Distribution of metrics for architecht: ' + ARCHITECTURE + '\nwith variables '
-   for var in FILEPATH_DATA[1:]:
-      var_name = var.split('-')[1]
-      title = title + var_name + ', '
-   fig.suptitle(title, fontsize=18)
+      f.write('MAE: ')
+      for i in range(num_simulations):
+         f.write(str(mae[i])+' ')
+      f.write('\n')
 
-   ax = plt.subplot(2, 2, 1)
-   counts, bins = np.histogram(mse)
-   ax.hist(bins[:-1], bins, weights=counts, density=True,
-           color='#607c8e', alpha=0.8,  rwidth=0.9)
-   ax.grid(axis='y', alpha=0.6)
-   ax.set_xlabel('Mean squared error', fontsize=12)
-   ax.set_ylabel("Density", fontsize=12)
-   kde = st.gaussian_kde(mse)
-   x = np.linspace(min(mse), max(mse), 1000)
-   y = kde(x)
-   ax.plot(x, y)
-
-   ax = plt.subplot(2, 2, 2)
-   counts, bins = np.histogram(msle)
-   ax.hist(bins[:-1], bins, weights=counts, density=True,
-           color='#607c8e', alpha=0.8,  rwidth=0.9)
-   ax.grid(axis='y', alpha=0.6)
-   ax.set_xlabel('Mean squared logarithmic error', fontsize=12)
-   kde = st.gaussian_kde(msle)
-   x = np.linspace(min(msle), max(msle), 1000)
-   y = kde(x)
-   ax.plot(x, y)
-
-   ax = plt.subplot(2, 2, 3)
-   counts, bins = np.histogram(mae)
-   ax.hist(bins[:-1], bins, weights=counts, density=True,
-           color='#607c8e', alpha=0.8,  rwidth=0.9)
-   ax.grid(axis='y', alpha=0.6)
-   ax.set_xlabel('Mean absolute error', fontsize=12)
-   kde = st.gaussian_kde(mae)
-   x = np.linspace(min(mae), max(mae), 1000)
-   y = kde(x)
-   ax.plot(x, y)
-
-   ax = plt.subplot(2, 2, 4)
-   counts, bins = np.histogram(times)
-   ax.hist(bins[:-1], bins, weights=counts, density=True,
-           color='#607c8e', alpha=0.8,  rwidth=0.9)
-   ax.grid(axis='y', alpha=0.6)
-   ax.set_xlabel('Time (s)', fontsize=12)
-   kde = st.gaussian_kde(times)
-   x = np.linspace(min(times), max(times), 1000)
-   y = kde(x)
-   ax.plot(x, y)
-
-   plt.savefig('figures/distributions')
+      f.write('Times: ')
+      for i in range(num_simulations):
+         f.write(str(times[i])+' ')
+      f.write('\n')
 
    return mse, msle, mae 
 
@@ -551,7 +508,7 @@ def evaluate_model(model, test, test_labels, keys):
 # %% main
 clear_session()
 
-var_list, keys, x_train, y_train, x_test, y_test = process_data(NUM_VARS!=0)
+var_list, keys, x_train, y_train, x_test, y_test = get_data(NUM_VARS!=0)
 
 df_train, df_valid, df_train_label, df_valid_label = train_test_split(x_train, y_train, 
                                                                      test_size=0.2,
@@ -560,7 +517,7 @@ df_train, df_valid, df_train_label, df_valid_label = train_test_split(x_train, y
 # here make that the mask variables work
 if TEST:
    # Multiple - create ensembles
-   calc_ensemble_mean_metrics(ENSEMBLE_SIZE, df_train, df_train_label, df_valid, 
+   calc_ensemble_metrics(ENSEMBLE_SIZE, df_train, df_train_label, df_valid, 
                               df_valid_label)
 else:
    # One model
