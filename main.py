@@ -1,7 +1,7 @@
 '''
 To do:
-- document code completely
 - increase evaluation of the model (time) (methods)
+- investigate different regions 
 '''
 # %% imports
 import numpy as np
@@ -50,9 +50,9 @@ HAPPY_W_MODEL = False
 ARCHITECTURE = 'cyclone' #choose from 'river', 'cyclone', 'unet', or 'initial'
 
 # evaluation
-EVAL_METHODS = ['MeanSquaredError', 'MeanSquaredLogarithmicError', 'mean_absolute_error']
+EVAL_METHODS = ['mean_squared_error', 'mean_squared_logarithmic_error', 'mean_absolute_error']
 TEST = True
-ENSEMBLE_SIZE = 120
+ENSEMBLE_SIZE = 3
 START_TIME = time.time()
 
 # %% plotting functions - double check
@@ -234,7 +234,7 @@ def get_data(reduce=False):
 
 # %% model funcions
 def unet_encoder_block(inputs, num_filters, bottleneck=False): # work on documentation here down
-   #geeksforgeeks
+   '''Builds the encoder sections of the unet models'''
   
    # Convolution with 3x3 filter followed by ReLU activation 
    x = Conv2D(num_filters, 3, padding = 'same')(inputs) 
@@ -251,12 +251,12 @@ def unet_encoder_block(inputs, num_filters, bottleneck=False): # work on documen
    return x
 
 def unet_decoder_block(inputs, skip_features, num_filters): 
+   '''Builds the decoder sections of the unet models'''
 
 	# Upsampling with 2x2 filter
    x = Conv2DTranspose(num_filters, (2, 2), strides = 2, padding = 'same')(inputs) 
 	
 	# Copy and crop the skip features 
-	# to match the shape of the upsampled input 
    skip_features = Resizing(x.shape[1], x.shape[2])(skip_features)
    x = Concatenate()([x, skip_features]) 
 	
@@ -271,8 +271,9 @@ def unet_decoder_block(inputs, skip_features, num_filters):
    return x
 
 def unet_maker(x):
-      '''Builds a model with U-Net architecture 
-      '''
+      '''Builds a model with U-Net architecture for input of the shape of the 
+      input x, and returns the model.'''
+
       inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
 
       # Contracting Path (Encoder)
@@ -299,27 +300,35 @@ def unet_maker(x):
       return model
 
 def weather_model_maker(x, filters_n_kernels):
-      inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
+   '''Builds a model with either cyclone or river architecture for input of the 
+   shape of the input x, and returns the model.'''
 
-      c1 = Conv2D(filters=filters_n_kernels[0], kernel_size=filters_n_kernels[1], 
+   inputs = Input(shape=(x.shape[1],x.shape[2],x.shape[3]))
+
+   c1 = Conv2D(filters=filters_n_kernels[0], kernel_size=filters_n_kernels[1], 
                     activation='relu', 
                     input_shape=(x.shape[1],x.shape[2],x.shape[3]),
                     padding='same')(inputs)
-      p1 = MaxPool2D(pool_size = filters_n_kernels[2], strides = 2)(c1)
-      c2 = Conv2D(filters=filters_n_kernels[3], kernel_size=filters_n_kernels[4], 
+   p1 = MaxPool2D(pool_size = filters_n_kernels[2], strides = 2)(c1)
+
+   c2 = Conv2D(filters=filters_n_kernels[3], kernel_size=filters_n_kernels[4], 
                     activation='relu', 
                     input_shape=(x.shape[1],x.shape[2],x.shape[3]),
                     padding='same')(p1)
-      p2 = MaxPool2D(pool_size = filters_n_kernels[5], strides = 2)(c2)
-      c3 = Dense(filters_n_kernels[6], activation='relu')(p2)
-      c4 = Dense(1, activation='sigmoid')(c3)
-      
-      outputs = Resizing(x.shape[1], x.shape[2])(c4)
+   p2 = MaxPool2D(pool_size = filters_n_kernels[5], strides = 2)(c2)
 
-      model = Model(inputs, outputs)
-      return model
+   c3 = Dense(filters_n_kernels[6], activation='relu')(p2)
+   c4 = Dense(1, activation='sigmoid')(c3)
+      
+   outputs = Resizing(x.shape[1], x.shape[2])(c4)
+   model = Model(inputs, outputs)
+
+   return model
 
 def initial_model_maker(x):
+   '''Builds a model with an original architecture for input of the shape of
+   the input x, and returns the model.'''
+
    model = Sequential()
    model.add(Conv2D(filters=30, kernel_size=(3,3), 
                     activation='relu', 
@@ -333,7 +342,7 @@ def initial_model_maker(x):
       model.add(LeakyReLU(alpha=0.1))
 
    model.add(Dropout(0.5))
-   model.add(Dense(1, activation='sigmoid')) # mention sigmoid needed for percentage range
+   model.add(Dense(1, activation='sigmoid'))
 
    return model
 
@@ -417,11 +426,13 @@ def build_compare_xarray(pred, real, keys):
    )
    return compare
 
-def calc_ensemble_metrics(num_simulations, train, train_label, valid, valid_label):
-   # need to make this depedent on metrics list
-   mse = np.zeros(num_simulations)
-   msle = np.zeros(num_simulations)
-   mae = np.zeros(num_simulations)
+def calc_ensemble_metrics(num_simulations, train, train_label, valid, 
+                                                valid_label, x_test, y_test):
+   '''Given the training, validation, and test data, builds and evaluates a
+   determined number of simulations. Once all the evaluation metrics are 
+   calculated, it is saved in a file to be used in evaluate_metrics.py'''
+
+   evals = np.array(np.zeros(num_simulations), dtype=object)
    times = np.zeros(num_simulations)
 
    for i in range(num_simulations):
@@ -429,35 +440,25 @@ def calc_ensemble_metrics(num_simulations, train, train_label, valid, valid_labe
                   train_label, valid, valid_label)
    
       eval = model.evaluate(x_test, y_test)
-      mse[i] = eval[0]
-      msle[i] = eval[1]
-      mae[i] = eval[2]
+      evals[i] = eval
       times[i] = time.time() - sum(times) - START_TIME
 
    with open('metrics/'+ARCHITECTURE+'.txt', 'a') as f:
-      f.write('MSE: ')
-      for i in range(num_simulations):
-         f.write(str(mse[i])+' ')
-      f.write('\n')
-
-      f.write('MSLE: ')
-      for i in range(num_simulations):
-         f.write(str(msle[i])+' ')
-      f.write('\n')
-
-      f.write('MAE: ')
-      for i in range(num_simulations):
-         f.write(str(mae[i])+' ')
-      f.write('\n')
+      for i in range(len(EVAL_METHODS)):
+         f.write(EVAL_METHODS[i]+': ')
+         for j in range(num_simulations):
+            f.write(str(evals[j][i])+' ')
+         f.write('\n')
 
       f.write('Times: ')
       for i in range(num_simulations):
          f.write(str(times[i])+' ')
       f.write('\n')
 
-   return mse, msle, mae 
-
 def calc_diff_metrics(compare):
+   '''Given a dataset with the difference between the real and predicted,
+   calculates the total sum of differences, and the average each pixel 
+   is off per day and returns it.'''
    total_off = np.zeros(len(compare['diff_tcc'].values))
    avg = np.zeros(len(compare['diff_tcc'].values))
    i=0
@@ -471,8 +472,10 @@ def calc_diff_metrics(compare):
    return total_off, avg
 
 def evaluate_model(model, test, test_labels, keys):
-   '''Given a trained model, use the test dataset and corect 
-   labels to evaluate the performance.'''
+   '''Given a trained model, use the test dataset and correct labels to
+   evaluate the performance with the predefined metrics. Addtionally plots
+   the best predictant day and the worst, this is calculated by finding the 
+   average percentage off.'''
 
    eval = model.evaluate(test, test_labels)
    for i in range(len(eval)):
@@ -518,9 +521,9 @@ df_train, df_valid, df_train_label, df_valid_label = train_test_split(x_train, y
 if TEST:
    # Multiple - create ensembles
    calc_ensemble_metrics(ENSEMBLE_SIZE, df_train, df_train_label, df_valid, 
-                              df_valid_label)
+                              df_valid_label, x_test, y_test)
 else:
    # One model
-   model = load_model(FILEPATH_MODEL, df_train,
-                     df_train_label, df_valid, df_valid_label)
+   model = load_model(FILEPATH_MODEL, df_train, df_train_label, df_valid, 
+                              df_valid_label)
    evaluate_model(model, x_test, y_test, keys)
