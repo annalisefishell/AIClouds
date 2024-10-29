@@ -1,88 +1,76 @@
 import numpy as np
-import xarray as xr
 import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import cmasher as cmr
-import math
-import os
 import scipy.stats as st
 
 def confidence_interval(ensemble, confidence=0.95):
+  n = len(ensemble)
+  sem = np.std(ensemble, ddof=1) / np.sqrt(n)
 
-   n = len(ensemble)
-   sem = np.std(ensemble, ddof=1) / np.sqrt(n)
+  z_score= st.norm.ppf(confidence)
+  margin_of_error = z_score * sem
 
-   z_score= st.norm.ppf(confidence)
-   # z_score = np.abs(np.percentile(np.random.normal(0, 1, 10**6), [100 * (1-confidence) / 2, 100 * (1 - (1-confidence) / 2)]))
-   margin_of_error = z_score * sem
+  confidence_interval = (np.mean(ensemble) - margin_of_error, np.mean(ensemble) + margin_of_error)
+  return confidence_interval
 
-   confidence_interval = (np.mean(ensemble) - margin_of_error, np.mean(ensemble) + margin_of_error)
-   return confidence_interval
+def print_metrics(mse, msle, mae, times, num_sims):
+  print('MSE mean:', round(sum(mse)/num_sims,5))
+  print('MSE conf:', confidence_interval(mse))
+  
+  print('MSLE mean:', round(sum(msle)/num_sims,5))
+  print('MSLE conf:', confidence_interval(msle))
 
-##### Read the data from metrics.txt
+  print('MAE mean:', round(sum(mae)/num_sims,5))
+  print('MAE conf:', confidence_interval(mae))
 
-print('MSE mean:', round(sum(mse)/num_simulations,5))
-print('MSLE mean:', round(sum(msle)/num_simulations,5))
-print('MAE mean:', round(sum(mae)/num_simulations,5))
-print('Time mean', round(sum(times)/num_simulations,5))
+  print('Time mean', round(sum(times)/num_sims,5))
+  print('Time mean', confidence_interval(times))
 
-# not completely correct yet, gives two arrays
-print('MSE conf:', confidence_interval(mse))
-print('MSLE conf:', confidence_interval(msle))
-print('MAE conf:', confidence_interval(mae))
-print('Time mean', confidence_interval(times))
+def read_file(architecture):
+  temp_dict = {}
+  file = open("metrics"+architecture+".txt", "r").readlines()
+  for line in file:
+    line = line.split(":")
+    temp_dict[line[0]] = line[1].split()
+  return temp_dict
 
-# histogram of the errors to see distributions
-fig = plt.figure(figsize=(10,10))
-title = 'Distribution of metrics for architecht: ' + ARCHITECTURE + '\nwith variables '
-for var in FILEPATH_DATA[1:]:
-  var_name = var.split('-')[1]
-  title = title + var_name + ', '
-fig.suptitle(title, fontsize=18)
+def plot_one_metric(ax, arch_list, metric, color):
+  for key,value in arch_list:
+    counts, bins = np.histogram(value[metric])
+    ax.hist(bins[:-1], bins, weights=counts, density=True,
+           color=color, alpha=0.6, rwidth=0.9, label=key)
+    kde = st.gaussian_kde(value[metric])
+    x = np.linspace(min(value[metrics]), max(value[metrics]), 1000)
+    y = kde(x)
+    ax.plot(x, y, color=color)
+  ax.grid(axis='y', alpha=0.7)
+  ax.set_xlabel(metric, fontsize=12)
+  ax.set_ylabel("Density", fontsize=12)
+  ax.legend()
 
-ax = plt.subplot(2, 2, 1)
-counts, bins = np.histogram(mse)
-ax.hist(bins[:-1], bins, weights=counts, density=True,
-           color='#607c8e', alpha=0.8,  rwidth=0.9)
-ax.grid(axis='y', alpha=0.6)
-ax.set_xlabel('Mean squared error', fontsize=12)
-ax.set_ylabel("Density", fontsize=12)
-kde = st.gaussian_kde(mse)
-x = np.linspace(min(mse), max(mse), 1000)
-y = kde(x)
-ax.plot(x, y)
+architechts = {
+    'initial' : read_file('initial'),
+    'cyclone' : read_file('cyclone'),
+    'river' : read_file('river'),
+    'unet' : read_file('unet')
+}
 
-ax = plt.subplot(2, 2, 2)
-counts, bins = np.histogram(msle)
-ax.hist(bins[:-1], bins, weights=counts, density=True,
-           color='#607c8e', alpha=0.8,  rwidth=0.9)
-ax.grid(axis='y', alpha=0.6)
-ax.set_xlabel('Mean squared logarithmic error', fontsize=12)
-kde = st.gaussian_kde(msle)
-x = np.linspace(min(msle), max(msle), 1000)
-y = kde(x)
-ax.plot(x, y)
+metrics = ['MSE', 'MSLE', 'MAE']
+colors = ['r', 'g', 'b', 'k']
+fig = plt.figure(figsize=(15,5))
+fig.suptitle('Distribution of metrics', fontsize=18)
+for i in range(len(metrics)):
+  ax = plt.subplot(1,3,i)
+  plot_one_metric(ax, architechts, metrics[i], colors[i])
+plt.savefig('figures/metrics_dist.png')
 
-ax = plt.subplot(2, 2, 3)
-counts, bins = np.histogram(mae)
-ax.hist(bins[:-1], bins, weights=counts, density=True,
-           color='#607c8e', alpha=0.8,  rwidth=0.9)
-ax.grid(axis='y', alpha=0.6)
-ax.set_xlabel('Mean absolute error', fontsize=12)
-kde = st.gaussian_kde(mae)
-x = np.linspace(min(mae), max(mae), 1000)
-y = kde(x)
-ax.plot(x, y)
+metrics = ['Times']
+fig = plt.figure(figsize=(15,5))
+fig.suptitle('Distribution of metrics', fontsize=18)
+for i in range(len(metrics)):
+  ax = plt.subplot(1,1,i)
+  plot_one_metric(ax, architechts, metrics[i], colors[i])
+plt.savefig('figures/time_dist.png')
 
-ax = plt.subplot(2, 2, 4)
-counts, bins = np.histogram(times)
-ax.hist(bins[:-1], bins, weights=counts, density=True,
-           color='#607c8e', alpha=0.8,  rwidth=0.9)
-ax.grid(axis='y', alpha=0.6)
-ax.set_xlabel('Time (s)', fontsize=12)
-kde = st.gaussian_kde(times)
-x = np.linspace(min(times), max(times), 1000)
-y = kde(x)
-ax.plot(x, y)
-
-plt.savefig('figures/distributions')
+for key,value in architechts:
+  print('For achitecture ' + key + ', the mean metrics with confidence intervals are:')
+  print_metrics(value['MSE'], value['MSLE'], value['MAE'], value['Times'], len(value['Times']))
