@@ -2,6 +2,7 @@
 To do:
 - increase evaluation of the model (time) (methods)
 - investigate different regions 
+- finalize plots
 '''
 # %% imports
 import numpy as np
@@ -47,12 +48,12 @@ CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1),
 # model
 FILEPATH_MODEL = 'model.pkl'
 HAPPY_W_MODEL = False
-ARCHITECTURE = 'cyclone' #choose from 'river', 'cyclone', 'unet', or 'initial'
+ARCHITECTURE = 'unet' #choose from 'river', 'cyclone', 'unet', or 'initial'
 
 # evaluation
 EVAL_METHODS = ['mean_squared_error', 'mean_squared_logarithmic_error', 'mean_absolute_error']
 TEST = True
-ENSEMBLE_SIZE = 3
+ENSEMBLE_SIZE = 20
 START_TIME = time.time()
 
 # %% plotting functions - double check
@@ -330,13 +331,13 @@ def initial_model_maker(x):
    the input x, and returns the model.'''
 
    model = Sequential()
-   model.add(Conv2D(filters=30, kernel_size=(3,3), 
+   model.add(Conv2D(filters=32, kernel_size=(3,3), 
                     activation='relu', 
                     input_shape=(x.shape[1],x.shape[2],x.shape[3]),
                     padding='same'))
 
    for layer in range(2):
-      model.add(Conv2D(filters=32*(layer+1), 
+      model.add(Conv2D(filters=32*(layer+2), 
                        kernel_size=(3,3), activation='relu',
                        padding='same'))
       model.add(LeakyReLU(alpha=0.1))

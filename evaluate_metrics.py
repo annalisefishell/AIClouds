@@ -53,9 +53,9 @@ architechts = {
     'river' : read_file('river'),
     'unet' : read_file('unet')
 }
-
-metrics = ['MSE', 'MSLE', 'MAE']
+metrics = ['mean_squared_error', 'mean_squared_logarithmic_error', 'mean_absolute_error']
 colors = ['r', 'g', 'b', 'k']
+
 fig = plt.figure(figsize=(15,5))
 fig.suptitle('Distribution of metrics', fontsize=18)
 for i in range(len(metrics)):
