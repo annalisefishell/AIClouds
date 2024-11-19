@@ -1,9 +1,3 @@
-'''
-To do:
-- increase evaluation of the model (time) (methods)
-- investigate different regions 
-- finalize plots
-'''
 # %% imports
 import numpy as np
 import xarray as xr
@@ -26,13 +20,13 @@ from tensorflow.keras.layers import Input, MaxPool2D, Conv2D, Conv2DTranspose, \
 # reading data
 FILEPATH_DATA = ['variables/ERA5-total_cloud_cover-1961-1980-WQBox.nc4', # always make target first
                   'variables/ERA5-total_column_water-1961-1980-WQBox.nc4', 
-                  'variables/ERA5-2m_temperature-1961-1980-WQBox.nc4']
-                  # 'variables/ERA5-total_precipitation-1961-1980-WQBox.nc4']
+                  'variables/ERA5-2m_temperature-1961-1980-WQBox.nc4',
+                  'variables/ERA5-total_precipitation-1961-1980-WQBox.nc4']
 FILEPATH_CLEANED_DATA = 'cleaned_data.pkl'
-HAPPY_W_DATA = True
+HAPPY_W_DATA = False
 NUM_VARS = len(FILEPATH_DATA)
-FILEPATH_MASKS = [] #'variables/ERA5_elevation-WQBox.nc',
-                  # 'variables/ERA5-land_sea_mask-WQBox.nc']
+FILEPATH_MASKS = ['variables/ERA5_elevation-WQBox.nc',
+                  'variables/ERA5-land_sea_mask-WQBox.nc']
 NUM_MASKS = len(FILEPATH_MASKS)
 
 # dates
@@ -47,12 +41,12 @@ CMAP = [cmr.get_sub_cmap('GnBu', 0, 1), cmr.get_sub_cmap('PuBu', 0, 1),
 
 # model
 FILEPATH_MODEL = 'model.pkl'
-HAPPY_W_MODEL = False
-ARCHITECTURE = 'unet' #choose from 'river', 'cyclone', 'unet', or 'initial'
+HAPPY_W_MODEL = True
+ARCHITECTURE = 'cyclone' #choose from 'river', 'cyclone', 'unet', or 'initial'
 
 # evaluation
 EVAL_METHODS = ['mean_squared_error', 'mean_squared_logarithmic_error', 'mean_absolute_error']
-TEST = True
+TEST = False
 ENSEMBLE_SIZE = 20
 START_TIME = time.time()
 
@@ -103,6 +97,7 @@ def plot_all_vars(ds, vars, date, filename='', title=''):
    for i in range(num_var):
       plot_var(data_plot, vars[i], i, x, y)
 
+   plt.tight_layout()
    if filename != '':
       plt.savefig(filename)
    else:
